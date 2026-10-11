@@ -1,28 +1,104 @@
 #include "bspline_opt/uniform_bspline.h"
 #include "MPC.hpp"
-#include "nav_msgs/Odometry.h"
-#include "geometry_msgs/Twist.h"
-#include "ego_planner/Bspline.h"
-#include "std_msgs/UInt8.h"
-#include "std_msgs/UInt8MultiArray.h"
-#include "geometry_msgs/PoseStamped.h"
-#include "tf/transform_listener.h"
-#include "tf/transform_datatypes.h"
+#include <nav_msgs/msg/odometry.hpp>
+#include <geometry_msgs/msg/twist.hpp>
+#include "ego_planner/msg/bspline.hpp"
+#include <std_msgs/msg/u_int8.hpp>
+#include <std_msgs/msg/u_int8_multi_array.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 //#include "quadrotor_msgs/PositionCommand.h"
-#include "std_msgs/Empty.h"
-#include "std_msgs/UInt8.h"
-#include "visualization_msgs/Marker.h"
-#include <ros/ros.h>
+#include <std_msgs/msg/empty.hpp>
+#include <std_msgs/msg/u_int8.hpp>
+#include <visualization_msgs/msg/marker.hpp>
+#include <ego_ros2/node_utils.hpp>
 #include "time.h"
+#include <ego_ros2/planar_odometry.hpp>
+#include <sensor_msgs/msg/laser_scan.hpp>
+#include <tf2_ros/transform_listener.h>
+#include <chrono>
+#include <limits>
+#include <algorithm>
 
 #define PI 3.1415926
 #define yaw_error_max 90.0/180*PI
 #define N 15
 
-ros::Publisher vel_cmd_pub;
+rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr vel_cmd_pub;
+
+rclcpp::Node::SharedPtr navigation_node;
+std::shared_ptr<tf2_ros::Buffer> navigation_tf;
+std::shared_ptr<tf2_ros::TransformListener> navigation_listener;
+std::string world_frame, base_frame;
+double maximum_velocity, maximum_yaw_rate, sensor_timeout, stop_distance;
+bool have_odometry = false, have_scan = false;
+double nearest_obstacle = std::numeric_limits<double>::infinity();
+using SteadyClock = std::chrono::steady_clock;
+SteadyClock::time_point last_odometry, last_scan, last_adjust_command;
+geometry_msgs::msg::Twist adjust_command;
+
+bool recent(SteadyClock::time_point time)
+{
+    return std::chrono::duration<double>(SteadyClock::now() - time).count() <= sensor_timeout;
+}
+
+void publish_command(const geometry_msgs::msg::Twist &candidate)
+{
+    geometry_msgs::msg::Twist output;
+    if (have_odometry && have_scan && recent(last_odometry) && recent(last_scan) &&
+        nearest_obstacle > stop_distance && std::isfinite(candidate.linear.x) &&
+        std::isfinite(candidate.angular.z)) {
+        output.linear.x = std::clamp(candidate.linear.x, -maximum_velocity, maximum_velocity);
+        output.angular.z = std::clamp(candidate.angular.z, -maximum_yaw_rate, maximum_yaw_rate);
+    }
+    vel_cmd_pub->publish(output);
+}
+
+void laser_callback(sensor_msgs::msg::LaserScan::ConstSharedPtr scan)
+{
+    have_scan = false;
+    if (scan->header.frame_id.empty() || scan->ranges.empty() ||
+        !std::isfinite(scan->angle_min) || !std::isfinite(scan->angle_increment) || scan->angle_increment == 0.0 ||
+        !std::isfinite(scan->range_min) || !std::isfinite(scan->range_max) ||
+        scan->range_min < 0.0 || scan->range_max <= scan->range_min) return;
+    try {
+        const double age = (navigation_node->now() - rclcpp::Time(scan->header.stamp)).seconds();
+        if (age > sensor_timeout || age < -0.2) return;
+        const auto transform = navigation_tf->lookupTransform(base_frame, scan->header.frame_id,
+                                                               rclcpp::Time(scan->header.stamp));
+        tf2::Transform sensor_to_base;
+        tf2::fromMsg(transform.transform, sensor_to_base);
+        nearest_obstacle = std::numeric_limits<double>::infinity();
+        bool observed = false;
+        for (size_t i = 0; i < scan->ranges.size(); ++i) {
+            const double range = scan->ranges[i];
+            if (std::isnan(range) || range < scan->range_min || range < 0.0 ||
+                (std::isfinite(range) && range > scan->range_max)) continue;
+            observed = true;
+            if (!std::isfinite(range)) continue;
+            const double angle = scan->angle_min + i * scan->angle_increment;
+            const auto point = sensor_to_base * tf2::Vector3(range * std::cos(angle), range * std::sin(angle), 0.0);
+            nearest_obstacle = std::min(nearest_obstacle, std::hypot(point.x(), point.y()));
+        }
+        if (observed) {
+            last_scan = SteadyClock::now();
+            have_scan = true;
+        }
+    } catch (const tf2::TransformException &error) {
+        RCLCPP_WARN_THROTTLE(navigation_node->get_logger(), *navigation_node->get_clock(), 2000,
+                             "LaserScan transform unavailable: %s", error.what());
+    }
+}
+
+void adjust_command_callback(geometry_msgs::msg::Twist::ConstSharedPtr message)
+{
+    adjust_command = *message;
+    last_adjust_command = SteadyClock::now();
+}
 
 //quadrotor_msgs::PositionCommand cmd;
-geometry_msgs::Twist cmd;
+geometry_msgs::msg::Twist cmd;
 double pos_gain[3] = {0, 0, 0};
 double vel_gain[3] = {0, 0, 0};
 
@@ -32,7 +108,7 @@ bool receive_traj_ = false;
 bool is_orientation_init = false;
 vector<UniformBspline> traj_;
 double traj_duration_;
-ros::Time start_time_,time_s,time_e;
+rclcpp::Time start_time_,time_s,time_e;
 int traj_id_;
 
 Eigen::Vector3d odom_pos_,odom_vel_;
@@ -40,24 +116,34 @@ Eigen::Quaterniond odom_orient_;
 
 MPC_controller mpc_controller;
 double roll,pitch,yaw;
-geometry_msgs::PoseStamped pose_cur;
-tf::Quaternion quat;
-std_msgs::UInt8 is_adjust_pose;
-std_msgs::UInt8 dir;
+geometry_msgs::msg::PoseStamped pose_cur;
+tf2::Quaternion quat;
+std_msgs::msg::UInt8 is_adjust_pose;
+std_msgs::msg::UInt8 dir;
 
 enum DIRECTION {POSITIVE=0,NEGATIVE=1};
 
 // yaw control
 double t_step;
 
-std_msgs::UInt8 stop_command;
+std_msgs::msg::UInt8 stop_command;
 
 ////time record
 clock_t start_clock,end_clock;
 double duration;
 
-void bsplineCallback(ego_planner::BsplineConstPtr msg)
+void bsplineCallback(ego_planner::msg::Bspline::ConstSharedPtr msg)
 {
+  if (msg->order < 1 || msg->order > 5 || msg->pos_pts.size() <= static_cast<size_t>(msg->order) ||
+      msg->knots.size() != msg->pos_pts.size() + msg->order + 1 ||
+      !std::is_sorted(msg->knots.begin(), msg->knots.end()) ||
+      !std::all_of(msg->knots.begin(), msg->knots.end(), [](double value) { return std::isfinite(value); }) ||
+      !std::all_of(msg->pos_pts.begin(), msg->pos_pts.end(), [](const auto &point) {
+          return std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z);
+      })) {
+      RCLCPP_ERROR(navigation_node->get_logger(), "Rejected malformed B-spline");
+      return;
+  }
   // parse pos traj
 
   Eigen::MatrixXd pos_pts(3, msg->pos_pts.size());
@@ -79,6 +165,11 @@ void bsplineCallback(ego_planner::BsplineConstPtr msg)
   pos_traj.setKnot(knots);
 
 
+  const double duration = pos_traj.getTimeSum();
+  if (!std::isfinite(duration) || duration <= 0.0) {
+      RCLCPP_ERROR(navigation_node->get_logger(), "Rejected B-spline with invalid duration");
+      return;
+  }
   start_time_ = msg->start_time;
   traj_id_ = msg->traj_id;
 
@@ -89,25 +180,25 @@ void bsplineCallback(ego_planner::BsplineConstPtr msg)
 
   traj_duration_ = traj_[0].getTimeSum();
 
-  //ROS_INFO("Receive b-spline trajectory!");
+  //RCLCPP_INFO(rclcpp::get_logger("ego_planner"), "Receive b-spline trajectory!");
 
   receive_traj_ = true;
 
 }
 
-void poseCallback(geometry_msgs::PoseStampedConstPtr msg)
+void poseCallback(geometry_msgs::msg::PoseStamped::ConstSharedPtr msg)
 {
     pose_cur = *msg;
-    tf::quaternionMsgToTF(msg->pose.orientation, quat);
-    tf::Matrix3x3(quat).getRPY(roll, pitch, yaw);//进行转换
+    tf2::fromMsg(msg->pose.orientation, quat);
+    tf2::Matrix3x3(quat).getRPY(roll, pitch, yaw);//进行转换
 }
 
-void adjust_yaw_Callback(std_msgs::UInt8ConstPtr msg)
+void adjust_yaw_Callback(std_msgs::msg::UInt8::ConstSharedPtr msg)
 {
     is_adjust_pose = *msg;
 }
 
-void dirCallback(const std_msgs::UInt8ConstPtr& msg)
+void dirCallback(const std_msgs::msg::UInt8::ConstSharedPtr& msg)
 {
     dir = *msg;
 }
@@ -123,7 +214,7 @@ void MPC_calculate(double &t_cur)
     double v_linear_1,w;
     double t_k,t_k_1;
 
-    //ROS_INFO("Run to here!");
+    //RCLCPP_INFO(rclcpp::get_logger("ego_planner"), "Run to here!");
 
     //Eigen::Vector3d pos_first = traj_[0].evaluateDeBoor(t_cur);
     //Eigen::Vector3d pos_second = traj_[0].evaluateDeBoor(t_cur+t_step);
@@ -135,7 +226,7 @@ void MPC_calculate(double &t_cur)
 
 //    if(abs(yaw-yaw_start)>yaw_error_max&&is_orientation_init==false)
 //    {
-//        ROS_INFO("current yaw : %5.3f , start yaw : %5.3f",yaw,yaw_start);
+//        RCLCPP_INFO(rclcpp::get_logger("ego_planner"), "current yaw : %5.3f , start yaw : %5.3f",yaw,yaw_start);
 //        if(abs(yaw-yaw_start)>PI)
 //        {
 //            cmd.twist.linear.x=0;
@@ -146,8 +237,8 @@ void MPC_calculate(double &t_cur)
 //            cmd.twist.linear.x=0;
 //            cmd.twist.angular.z = (yaw_start-yaw)/abs(yaw-yaw_start)*PI/10;
 //        }
-//        vel_cmd_pub.publish(cmd);
-//        start_time_ = ros::Time::now();
+//
+//        start_time_ = ego_ros2::now();
 //        //cout<<"current yaw : "<<yaw*180/PI<<endl;
 //        //cout<<"target yaw : "<<yaw_start*180/PI<<endl;
 //        //cout<<"current w : "<<web_cmd_vel.angular.z<<endl;
@@ -189,7 +280,7 @@ void MPC_calculate(double &t_cur)
 
             if(abs(yaw2-yaw1)>PI)
             {
-                //ROS_WARN("orientation suddenly change !");
+                //RCLCPP_WARN(rclcpp::get_logger("ego_planner"), "orientation suddenly change !");
                 //cout<<"current index : "<<i+1<<endl;
                 //cout<<"yaw 1 : "<<yaw1<<endl;
                 //cout<<"yaw 2 : "<<yaw2<<endl;
@@ -250,7 +341,7 @@ void MPC_calculate(double &t_cur)
         // cout<<"xr  : "<<X_r[0]<<endl;
         // cout<<"xk  : "<<X_k<<endl;
 
-        //ROS_INFO("Run to here!");
+        //RCLCPP_INFO(rclcpp::get_logger("ego_planner"), "Run to here!");
         u_k = mpc_controller.MPC_Solve_qp(X_k,X_r,U_r,N);
 
 
@@ -269,14 +360,14 @@ void MPC_calculate(double &t_cur)
        conut1+=1;
        if(conut1%20==0)
        {
-           ROS_WARN("U r :");
+           RCLCPP_WARN(rclcpp::get_logger("ego_planner"), "U r :");
            for(int i=0;i<U_r.size();i++)
            {
                cout<<"vel ref :"<<U_r[i](0)<<","<<"w ref : "<<U_r[i](1);
                cout<<endl;
            }
            cout<<endl;
-           ROS_WARN("U k :");
+           RCLCPP_WARN(rclcpp::get_logger("ego_planner"), "U k :");
            for(int i=0;i<u_k.cols();i++)
            {
                cout<<"vel optimal :"<<u_k.col(i)(0)<<","<<"w optimal : "<<u_k.col(i)(1);
@@ -289,7 +380,7 @@ void MPC_calculate(double &t_cur)
        }
 
 
-        vel_cmd_pub.publish(cmd);
+
 //        control_times+=1;
 //        //cout<<"control_times : "<<control_times<<endl;
 //        //cout<<"current t : "<<t_c<<endl;
@@ -299,137 +390,123 @@ void MPC_calculate(double &t_cur)
 //            is_orientation_init=false;
 //            web_cmd_vel.angular.z = 0;
 //            web_cmd_vel.linear.x = 0;
-//            web_cmd_pub.publish(web_cmd_vel);
+//            web_cmd_pub->publish(web_cmd_vel);
 //            control_times=0;
 //        }
-        //ros::Time t_end = ros::Time::now();
-        //ROS_INFO("control total time : %5.3f ms",(t_end-t_start).toSec()*1000);
+        //rclcpp::Time t_end = ego_ros2::now();
+        //RCLCPP_INFO(rclcpp::get_logger("ego_planner"), "control total time : %5.3f ms",(t_end-t_start).seconds()*1000);
    // }
 
 }
 
-void stopCallback(std_msgs::UInt8ConstPtr msg)
+void stopCallback(std_msgs::msg::UInt8::ConstSharedPtr msg)
 {
     stop_command = *msg;
 }
 
-void odometryCallback(const nav_msgs::OdometryConstPtr &msg)
+void odometryCallback(const nav_msgs::msg::Odometry::ConstSharedPtr &msg)
 {
-    odom_pos_(0) = msg->pose.pose.position.x;
-    odom_pos_(1) = msg->pose.pose.position.y;
-    odom_pos_(2) = msg->pose.pose.position.z;
+    have_odometry = false;
+    try {
+        const double age = (navigation_node->now() - rclcpp::Time(msg->header.stamp)).seconds();
+        if (age > sensor_timeout || age < -0.2) return;
+        const auto state = ego_ros2::planar_odometry(*msg, *navigation_tf, world_frame);
+        odom_pos_ << state.pose.pose.position.x, state.pose.pose.position.y, 0.0;
+        odom_vel_ = state.velocity;
+        const auto &orientation = state.pose.pose.orientation;
+        odom_orient_ = Eigen::Quaterniond(orientation.w, orientation.x, orientation.y, orientation.z);
+        roll = pitch = 0.0;
+        yaw = state.yaw;
+        if (dir.data == NEGATIVE) yaw = std::remainder(yaw + PI, 2.0 * PI);
+        last_odometry = SteadyClock::now();
+        have_odometry = true;
+    } catch (const std::exception &error) {
+        RCLCPP_WARN_THROTTLE(navigation_node->get_logger(), *navigation_node->get_clock(), 2000,
+                             "Odometry rejected: %s", error.what());
+    }
+}
 
-    odom_vel_(0) = msg->twist.twist.linear.x;
-    odom_vel_(1) = msg->twist.twist.linear.y;
-    odom_vel_(2) = msg->twist.twist.linear.z;
-
-    //odom_acc_ = estimateAcc( msg );
-
-    odom_orient_.w() = msg->pose.pose.orientation.w;
-    odom_orient_.x() = msg->pose.pose.orientation.x;
-    odom_orient_.y() = msg->pose.pose.orientation.y;
-    odom_orient_.z() = msg->pose.pose.orientation.z;
-
-    tf::quaternionMsgToTF(msg->pose.pose.orientation,quat);
-    tf::Matrix3x3(quat).getRPY(roll, pitch, yaw);
-
-    if(dir.data==NEGATIVE)
-    {
-        if(yaw>0)
-        {
-            yaw -= PI;
-        }else if(yaw<0)
-        {
-            yaw += PI;
+void cmdCallback()
+{
+    cmd = geometry_msgs::msg::Twist();
+    if (stop_command.data == 1 || !have_odometry || !have_scan ||
+        !recent(last_odometry) || !recent(last_scan)) {
+        publish_command(cmd);
+        return;
+    }
+    if (is_adjust_pose.data == 1) {
+        if (recent(last_adjust_command)) publish_command(adjust_command);
+        else publish_command(cmd);
+        return;
+    }
+    if (!receive_traj_) {
+        publish_command(cmd);
+        return;
+    }
+    const double t_cur = (ego_ros2::now() - start_time_).seconds();
+    if (t_cur >= 0.0 && t_cur < traj_duration_) {
+        double time = t_cur;
+        try {
+            MPC_calculate(time);
+        } catch (const std::exception &error) {
+            RCLCPP_ERROR_THROTTLE(navigation_node->get_logger(), *navigation_node->get_clock(), 2000,
+                                  "MPC command rejected: %s", error.what());
+            cmd = geometry_msgs::msg::Twist();
         }
+    } else {
+        is_orientation_init = false;
     }
-
+    publish_command(cmd);
 }
-
-void cmdCallback(const ros::TimerEvent &e)
-{
-    /* no publishing before receive traj_ */
-    if (stop_command.data==1)
-    {
-        cmd.angular.z = 0;
-        cmd.linear.x = 0;
-        vel_cmd_pub.publish(cmd);
-        return;
-    }
-
-    if (!receive_traj_)
-        return;
-    //ROS_WARN("Run here !");
-    ros::Time time_s = ros::Time::now();
-    double t_cur = (time_s - start_time_).toSec();
-
-//    Eigen::Vector3d pos_first = traj_[0].evaluateDeBoor(t_cur);
-//    Eigen::Vector3d pos_second = traj_[0].evaluateDeBoor(t_cur+t_step);
-//    double yaw_start = atan2((pos_second-pos_first)(1),(pos_second-pos_first)(0));
-
-    static ros::Time time_last = ros::Time::now();
-
-    if (t_cur < traj_duration_ && t_cur >= 0.0)
-    {
-        //ROS_INFO("MPC_Calculate!");
-        start_clock = clock();
-        MPC_calculate(t_cur);
-        end_clock = clock();
-        duration = (double)(end_clock - start_clock) / CLOCKS_PER_SEC *1000;
-        //ROS_INFO("Control times : %f ms",duration);
-    }
-    else if (t_cur >= traj_duration_)
-    {
-        cmd.angular.z = 0;
-        cmd.linear.x = 0;
-        vel_cmd_pub.publish(cmd);
-        is_orientation_init=false;
-    }
-    else
-    {
-        cout << "[Traj server]: invalid time." << endl;
-    }
-    time_last = time_s;
-
-    vel_cmd_pub.publish(cmd);
-}
-
 
 int main(int argc, char **argv)
 {
-  ros::init(argc, argv, "traj_server");
-  ros::NodeHandle node("~");
+  rclcpp::init(argc, argv);
+  auto node = std::make_shared<rclcpp::Node>("traj_server");
+  ego_ros2::use_clock(node);
 
-  std::string cmd_topic,pose_topic;
-  node.getParam("/ego_planner_node/fsm/pose_topic",pose_topic);
-  node.getParam("/ego_planner_node/fsm/vel_topic",cmd_topic);
-
-
-  ros::Subscriber bspline_sub = node.subscribe("/planning/bspline", 10, bsplineCallback);
-  ros::Subscriber pose_sub = node.subscribe(pose_topic, 10, poseCallback);
-  ros::Subscriber odom_sub = node.subscribe("/state_estimation", 10, odometryCallback);
-  ros::Subscriber stop_sub = node.subscribe("/emergency_stop",10,stopCallback);
-  ros::Subscriber adjust_yaw_sub = node.subscribe("/is_adjust_yaw",10,adjust_yaw_Callback);
-  ros::Subscriber command_sub = node.subscribe("/direction",10,dirCallback);
+  navigation_node = node;
+  ego_ros2::parameter(node, "world_frame", world_frame, std::string("odom"));
+  ego_ros2::parameter(node, "base_frame", base_frame, std::string("base_link"));
+  ego_ros2::parameter(node, "MPC.v_max", maximum_velocity, 1.0);
+  ego_ros2::parameter(node, "MPC.w_max", maximum_yaw_rate, 1.0);
+  ego_ros2::parameter(node, "sensor_timeout", sensor_timeout, 0.5);
+  ego_ros2::parameter(node, "stop_distance", stop_distance, 0.35);
+  if (maximum_velocity <= 0.0 || maximum_yaw_rate <= 0.0 || sensor_timeout <= 0.0 || stop_distance < 0.0)
+      throw std::invalid_argument("Invalid velocity, watchdog, or stop-distance parameters");
+  navigation_tf = std::make_shared<tf2_ros::Buffer>(node->get_clock());
+  navigation_listener = std::make_shared<tf2_ros::TransformListener>(*navigation_tf, node, true);
+  auto bspline_sub = node->create_subscription<ego_planner::msg::Bspline>("/planning/bspline", 10, bsplineCallback);
+  auto odom_sub = node->create_subscription<nav_msgs::msg::Odometry>("/state_estimation", rclcpp::SensorDataQoS(), odometryCallback);
+  auto scan_sub = node->create_subscription<sensor_msgs::msg::LaserScan>("scan", rclcpp::SensorDataQoS(), laser_callback);
+  auto stop_sub = node->create_subscription<std_msgs::msg::UInt8>("/emergency_stop", 10, stopCallback);
+  auto adjust_yaw_sub = node->create_subscription<std_msgs::msg::UInt8>("/is_adjust_yaw", 10, adjust_yaw_Callback);
+  auto command_sub = node->create_subscription<std_msgs::msg::UInt8>("/direction", 10, dirCallback);
+  auto adjust_sub = node->create_subscription<geometry_msgs::msg::Twist>("/planning/adjust_cmd_vel", 10, adjust_command_callback);
+  std::string cmd_topic;
+  ego_ros2::parameter(node, "cmd_topic", cmd_topic, std::string("cmd_vel"));
 
   mpc_controller.MPC_init(node);
-  vel_cmd_pub = node.advertise<geometry_msgs::Twist>("/cmd_vel", 50);
+  vel_cmd_pub = node->create_publisher<geometry_msgs::msg::Twist>(cmd_topic, 10);
   stop_command.data = 0;
+  is_adjust_pose.data = 0;
   dir.data = POSITIVE;
   t_step = 0.03;
 
 
-  ros::Timer cmd_timer = node.createTimer(ros::Duration(0.03), cmdCallback);
+  auto cmd_timer = node->create_wall_timer(std::chrono::milliseconds(30), cmdCallback);
 
-//  nh.param("traj_server/time_forward", time_forward_, -1.0);
+//  ego_ros2::parameter(nh, "traj_server/time_forward", time_forward_, -1.0);
 //  last_yaw_ = 0.0;
 //  last_yaw_dot_ = 0.0;
 
-  ros::Duration(1.0).sleep();
+  rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(1.0)));
 
-  ROS_WARN("[Traj server]: ready.");
+  RCLCPP_WARN(rclcpp::get_logger("ego_planner"), "[Traj server]: ready.");
 
-  ros::spin();
+  rclcpp::spin(node);
+  vel_cmd_pub->publish(geometry_msgs::msg::Twist());
+  rclcpp::shutdown();
 
   return 0;
 }

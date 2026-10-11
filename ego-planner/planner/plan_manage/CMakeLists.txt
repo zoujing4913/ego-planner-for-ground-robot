@@ -1,71 +1,39 @@
-cmake_minimum_required(VERSION 2.8.3)
+cmake_minimum_required(VERSION 3.16)
 project(ego_planner)
-
-set(CMAKE_BUILD_TYPE "Release")
-ADD_COMPILE_OPTIONS(-std=c++11 )
-ADD_COMPILE_OPTIONS(-std=c++14 )
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall -g")
-
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+find_package(ament_cmake REQUIRED)
 find_package(Eigen3 REQUIRED)
-find_package(PCL 1.7 REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
+find_package(builtin_interfaces REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(ego_ros2 REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
+find_package(plan_env REQUIRED)
+find_package(path_searching REQUIRED)
+find_package(bspline_opt REQUIRED)
+find_package(traj_utils REQUIRED)
+find_package(mpc_controller REQUIRED)
 
-find_package(catkin REQUIRED COMPONENTS
-  roscpp
-  std_msgs
-  geometry_msgs
-  plan_env
-  path_searching
-  bspline_opt
-  traj_utils
-  message_generation
-  cv_bridge
-  mpc_controller
-  tf
-)
-
-# Generate messages in the 'msg' folder
-add_message_files(
-  FILES
-  Bspline.msg
-  DataDisp.msg
-  )
-  
-# Generate added messages and services with any dependencies listed here
-generate_messages(
-  DEPENDENCIES
-  std_msgs
-  geometry_msgs
-)
-
-# catkin_package(CATKIN_DEPENDS message_runtime)
-catkin_package(
- INCLUDE_DIRS include
- LIBRARIES ego_planner
- CATKIN_DEPENDS plan_env path_searching bspline_opt traj_utils message_runtime mpc_controller
-#  DEPENDS system_lib
-)
-
-include_directories(
-  include
-  SYSTEM
-  ${catkin_INCLUDE_DIRS} ${PROJECT_SOURCE_DIR}/include
-  ${EIGEN3_INCLUDE_DIR}
-  ${PCL_INCLUDE_DIRS}
-)
-
-
-add_executable(ego_planner_node
-  src/ego_planner_node.cpp 
-  src/ego_replan_fsm.cpp
-  src/planner_manager.cpp
-  )
-target_link_libraries(ego_planner_node 
-  ${catkin_LIBRARIES}
-  )
-add_dependencies(ego_planner_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
-
+rosidl_generate_interfaces(${PROJECT_NAME} "msg/Bspline.msg" "msg/DataDisp.msg" DEPENDENCIES builtin_interfaces std_msgs geometry_msgs)
+rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} rosidl_typesupport_cpp)
+add_executable(ego_planner_node src/ego_planner_node.cpp src/ego_replan_fsm.cpp src/planner_manager.cpp)
 add_executable(traj_server src/traj_server.cpp)
-target_link_libraries(traj_server ${catkin_LIBRARIES} libqpOASES.so)
-add_dependencies(traj_server ${${PROJECT_NAME}_EXPORTED_TARGETS})
-
-
+foreach(target ego_planner_node traj_server)
+  target_include_directories(${target} PRIVATE include)
+  ament_target_dependencies(${target} rclcpp ego_ros2 std_msgs nav_msgs sensor_msgs geometry_msgs visualization_msgs tf2 tf2_ros tf2_geometry_msgs plan_env path_searching bspline_opt traj_utils mpc_controller)
+  target_link_libraries(${target} Eigen3::Eigen plan_env::plan_env path_searching::path_searching bspline_opt::bspline_opt traj_utils::traj_utils mpc_controller::mpc_controller ${cpp_typesupport_target})
+endforeach()
+install(TARGETS ego_planner_node traj_server DESTINATION lib/${PROJECT_NAME})
+install(DIRECTORY include/ DESTINATION include)
+install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY config DESTINATION share/${PROJECT_NAME})
+ament_export_dependencies(rosidl_default_runtime)
+ament_package()

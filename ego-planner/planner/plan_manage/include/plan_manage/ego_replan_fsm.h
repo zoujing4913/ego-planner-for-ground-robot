@@ -4,24 +4,24 @@
 #include <Eigen/Eigen>
 #include <algorithm>
 #include <iostream>
-#include <nav_msgs/Path.h>
-#include <nav_msgs/Odometry.h>
-#include <sensor_msgs/Imu.h>
-#include <std_msgs/UInt8.h>
-#include <ros/ros.h>
-#include <std_msgs/Empty.h>
+#include <nav_msgs/msg/path.hpp>
+#include <nav_msgs/msg/odometry.hpp>
+#include <sensor_msgs/msg/imu.hpp>
+#include <std_msgs/msg/u_int8.hpp>
+#include <ego_ros2/node_utils.hpp>
+#include <std_msgs/msg/empty.hpp>
 #include <vector>
-#include <visualization_msgs/Marker.h>
+#include <visualization_msgs/msg/marker.hpp>
 
 #include <bspline_opt/bspline_optimizer.h>
 #include <plan_env/grid_map.h>
-#include <ego_planner/Bspline.h>
-#include <ego_planner/DataDisp.h>
+#include <ego_planner/msg/bspline.hpp>
+#include <ego_planner/msg/data_disp.hpp>
 #include <plan_manage/planner_manager.h>
 #include <traj_utils/planning_visualization.h>
 
-#include <tf/transform_broadcaster.h>
-#include "tf/transform_datatypes.h"
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 
 using std::vector;
@@ -54,7 +54,7 @@ namespace ego_planner
     /* planning utils */
     EGOPlannerManager::Ptr planner_manager_;
     PlanningVisualization::Ptr visualization_;
-    ego_planner::DataDisp data_disp_;
+    ego_planner::msg::DataDisp data_disp_;
 
     /* parameters */
     int target_type_; // 1 mannual select, 2 hard code
@@ -70,10 +70,10 @@ namespace ego_planner
     int continously_called_times_{0};
 
     /* motion data */
-    geometry_msgs::Twist cmd_vel;
-    std_msgs::UInt8 is_adjust_pose;
+    geometry_msgs::msg::Twist cmd_vel;
+    std_msgs::msg::UInt8 is_adjust_pose;
     double w_adjust;
-    tf::Quaternion quat;
+    tf2::Quaternion quat;
     bool is_pos_update;
     bool is_target_receive;
     enum DIRECTION {POSITIVE=0,NEGATIVE=1};
@@ -92,10 +92,18 @@ namespace ego_planner
     bool flag_escape_emergency_;
 
     /* ROS utils */
-    ros::NodeHandle node_;
-    ros::Timer exec_timer_, safety_timer_;
-    ros::Subscriber waypoint_sub_, odom_sub_;
-    ros::Publisher replan_pub_, new_pub_, bspline_pub_, data_disp_pub_,cmd_pub_,adjust_cmd_pub_,odom_adjust_pub_,dir_pub,stop_pub;
+    rclcpp::Node::SharedPtr node_;
+    std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+    std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+    std::string world_frame_;
+    rclcpp::TimerBase::SharedPtr exec_timer_, safety_timer_;
+    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr waypoint_sub_;
+    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
+    rclcpp::Publisher<ego_planner::msg::Bspline>::SharedPtr bspline_pub_;
+    rclcpp::Publisher<ego_planner::msg::DataDisp>::SharedPtr data_disp_pub_;
+    rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_pub_;
+    rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_adjust_pub_;
+    rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr adjust_cmd_pub_, dir_pub, stop_pub;
 
     /* helper functions */
     bool callReboundReplan(bool flag_use_poly_init, bool flag_randomPolyTraj); // front-end and back-end method
@@ -115,11 +123,11 @@ namespace ego_planner
     void publishBspline();
 
     /* ROS functions */
-    void execFSMCallback(const ros::TimerEvent &e);
-    void checkCollisionCallback(const ros::TimerEvent &e);
-    void waypointCallback(const nav_msgs::PathConstPtr &msg);
-    void odometryCallback(const nav_msgs::OdometryConstPtr &msg);
-    void goal_callback(const geometry_msgs::PoseStamped::ConstPtr &msg);
+    void execFSMCallback();
+    void checkCollisionCallback();
+    void waypointCallback(const nav_msgs::msg::Path::ConstSharedPtr &msg);
+    void odometryCallback(const nav_msgs::msg::Odometry::ConstSharedPtr &msg);
+    void goal_callback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr &msg);
 
     bool checkCollision();
 
@@ -131,7 +139,7 @@ namespace ego_planner
     {
     }
 
-    void init(ros::NodeHandle &nh);
+    void init(const rclcpp::Node::SharedPtr &nh);
 
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
   };

@@ -4,7 +4,7 @@
 #include <qpOASES.hpp>
 #include <Eigen/Eigen>
 #include <vector>
-#include "ros/ros.h"
+#include <ego_ros2/node_utils.hpp>
 
 class MPC_controller
 {
@@ -18,7 +18,7 @@ public:
      * @return    预测输出序列
      */
     Eigen::MatrixXd MPC_Solve_qp(Eigen::Vector3d X_k,std::vector<Eigen::Vector3d >X_r,std::vector<Eigen::Vector2d >U_r,const int N);
-    void MPC_init(ros::NodeHandle &nh);
+    void MPC_init(const rclcpp::Node::SharedPtr &nh);
 private:
     double v_max;
     double v_min;

@@ -5,7 +5,7 @@
 #include <path_searching/dyn_a_star.h>
 #include <bspline_opt/uniform_bspline.h>
 #include <plan_env/grid_map.h>
-#include <ros/ros.h>
+#include <ego_ros2/node_utils.hpp>
 #include "bspline_opt/lbfgs.hpp"
 
 // Gradient and elasitc band optimization
@@ -53,7 +53,7 @@ namespace ego_planner
 
         /* main API */
         void setEnvironment(const GridMap::Ptr &env);
-        void setParam(ros::NodeHandle &nh);
+        void setParam(const rclcpp::Node::SharedPtr &nh);
         Eigen::MatrixXd BsplineOptimizeTraj(const Eigen::MatrixXd &points, const double &ts,
                                             const int &cost_function, int max_num_id, int max_time_id);
 

@@ -1,6 +1,7 @@
 #include "MPC.hpp"
 #include "math.h"
 #include "iostream"
+#include <stdexcept>
 
 #define PI 3.1415926
 #define T 0.03
@@ -102,10 +103,14 @@ MatrixXd MPC_controller::MPC_Solve_qp(Eigen::Vector3d X_k,std::vector<Eigen::Vec
     int_t nWSR = 800;
 
     QProblem mpc_qp_solver(2*N,1);
-    mpc_qp_solver.init(H,g,A,lb,ub,lbA,ubA,nWSR);
+    if (mpc_qp_solver.init(H,g,A,lb,ub,lbA,ubA,nWSR) != SUCCESSFUL_RETURN) {
+        throw std::runtime_error("qpOASES did not produce an optimal solution");
+    }
 
     real_t x_solution[2*N];
-    mpc_qp_solver.getPrimalSolution(x_solution);
+    if (mpc_qp_solver.getPrimalSolution(x_solution) != SUCCESSFUL_RETURN) {
+        throw std::runtime_error("qpOASES returned no primal solution");
+    }
 
 
     Vector2d u_k;
@@ -121,16 +126,16 @@ MatrixXd MPC_controller::MPC_Solve_qp(Eigen::Vector3d X_k,std::vector<Eigen::Vec
     return U_result;
 }
 
-void MPC_controller::MPC_init(ros::NodeHandle &nh)
+void MPC_controller::MPC_init(const rclcpp::Node::SharedPtr &nh)
 {
-    nh.getParam("/ego_planner_node/MPC/v_max", v_max);
-    nh.getParam("/ego_planner_node/MPC/w_max", w_max);
-    nh.getParam("/ego_planner_node/MPC/omega0", omega0);
-    nh.getParam("/ego_planner_node/MPC/omega1", omega1);
+    ego_ros2::parameter(nh, "MPC.v_max", v_max, 1.0);
+    ego_ros2::parameter(nh, "MPC.w_max", w_max, 1.0);
+    ego_ros2::parameter(nh, "MPC.omega0", omega0, 1.0);
+    ego_ros2::parameter(nh, "MPC.omega1", omega1, 0.5);
 
     // nh.param("/ego_planner_node/MPC/v_max",v_max,0.7);
     // nh.param("/ego_planner_node/MPC/w_max",w_max,0.3);
-    ROS_INFO("v_max : %f , w_max : %f",v_max,w_max);
+    RCLCPP_INFO(rclcpp::get_logger("mpc_controller"), "v_max : %f , w_max : %f",v_max,w_max);
     w_min = -w_max;
     v_min=0;
 

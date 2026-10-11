@@ -1,3 +1,5 @@
+ROS 2 Humble 分支的编译、差速底盘接口、激光避障及 RViz 导航说明见 [ROS2_HUMBLE.md](ROS2_HUMBLE.md)。以下为原 ROS 1 文档。
+
 [toc]
 
 # Environment Configuration
