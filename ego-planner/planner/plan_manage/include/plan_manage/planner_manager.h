@@ -5,10 +5,10 @@
 
 #include <bspline_opt/bspline_optimizer.h>
 #include <bspline_opt/uniform_bspline.h>
-#include <ego_planner/DataDisp.h>
+#include <ego_planner/msg/data_disp.hpp>
 #include <plan_env/grid_map.h>
 #include <plan_manage/plan_container.hpp>
-#include <ros/ros.h>
+#include <ego_ros2/node_utils.hpp>
 #include <traj_utils/planning_visualization.h>
 
 namespace ego_planner
@@ -35,7 +35,7 @@ namespace ego_planner
         bool planGlobalTrajWaypoints(const Eigen::Vector3d &start_pos, const Eigen::Vector3d &start_vel, const Eigen::Vector3d &start_acc,
                                      const std::vector<Eigen::Vector3d> &waypoints, const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc);
 
-        void initPlanModules(ros::NodeHandle &nh, PlanningVisualization::Ptr vis = NULL);
+        void initPlanModules(const rclcpp::Node::SharedPtr &nh, PlanningVisualization::Ptr vis = NULL);
 
         PlanParameters pp_;
         LocalTrajData local_data_;
@@ -50,7 +50,7 @@ namespace ego_planner
 
         int continous_failures_count_{0};
 
-        void updateTrajInfo(const UniformBspline &position_traj, const ros::Time time_now);
+        void updateTrajInfo(const UniformBspline &position_traj, const rclcpp::Time time_now);
 
         void reparamBspline(UniformBspline &bspline, vector<Eigen::Vector3d> &start_end_derivative, double ratio, Eigen::MatrixXd &ctrl_pts, double &dt,
                             double &time_inc);

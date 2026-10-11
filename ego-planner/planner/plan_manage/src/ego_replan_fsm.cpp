@@ -7,28 +7,32 @@
 namespace ego_planner
 {
 
-  void EGOReplanFSM::init(ros::NodeHandle &nh)
+  void EGOReplanFSM::init(const rclcpp::Node::SharedPtr &nh)
   {
+    node_ = nh;
+    trigger_ = false;
+    have_new_target_ = false;
+    flag_escape_emergency_ = false;
     current_wp_ = 0;
     exec_state_ = FSM_EXEC_STATE::INIT;
     have_target_ = false;
     have_odom_ = false;
 
     /*  fsm param  */
-    nh.param("fsm/flight_type", target_type_, -1);
-    nh.param("fsm/thresh_replan", replan_thresh_, -1.0);
-    nh.param("fsm/thresh_no_replan", no_replan_thresh_, -1.0);
-    nh.param("fsm/planning_horizon", planning_horizen_, -1.0);
-    nh.param("fsm/planning_horizen_time", planning_horizen_time_, -1.0);
-    nh.param("fsm/emergency_time_", emergency_time_, 1.0);
-    nh.param("fsm/w_adjust_", w_adjust, 1.0);
+    ego_ros2::parameter(nh, "fsm/flight_type", target_type_, -1);
+    ego_ros2::parameter(nh, "fsm/thresh_replan", replan_thresh_, -1.0);
+    ego_ros2::parameter(nh, "fsm/thresh_no_replan", no_replan_thresh_, -1.0);
+    ego_ros2::parameter(nh, "fsm/planning_horizon", planning_horizen_, -1.0);
+    ego_ros2::parameter(nh, "fsm/planning_horizen_time", planning_horizen_time_, -1.0);
+    ego_ros2::parameter(nh, "fsm/emergency_time_", emergency_time_, 1.0);
+    ego_ros2::parameter(nh, "fsm/w_adjust_", w_adjust, 1.0);
 
-    nh.param("fsm/waypoint_num", waypoint_num_, -1);
+    ego_ros2::parameter(nh, "fsm/waypoint_num", waypoint_num_, -1);
     for (int i = 0; i < waypoint_num_; i++)
     {
-      nh.param("fsm/waypoint" + to_string(i) + "_x", waypoints_[i][0], -1.0);
-      nh.param("fsm/waypoint" + to_string(i) + "_y", waypoints_[i][1], -1.0);
-      nh.param("fsm/waypoint" + to_string(i) + "_z", waypoints_[i][2], -1.0);
+      ego_ros2::parameter(nh, "fsm/waypoint" + to_string(i) + "_x", waypoints_[i][0], -1.0);
+      ego_ros2::parameter(nh, "fsm/waypoint" + to_string(i) + "_y", waypoints_[i][1], -1.0);
+      ego_ros2::parameter(nh, "fsm/waypoint" + to_string(i) + "_z", waypoints_[i][2], -1.0);
     }
 
     /* initialize main modules */
@@ -39,30 +43,30 @@ namespace ego_planner
       goal_last << 0,0,0;
 
     /* callback */
-    exec_timer_ = nh.createTimer(ros::Duration(0.01), &EGOReplanFSM::execFSMCallback, this);
-    safety_timer_ = nh.createTimer(ros::Duration(0.05), &EGOReplanFSM::checkCollisionCallback, this);
+    exec_timer_ = nh->create_wall_timer(std::chrono::duration<double>(0.01), std::bind(&EGOReplanFSM::execFSMCallback, this));
+    safety_timer_ = nh->create_wall_timer(std::chrono::duration<double>(0.05), std::bind(&EGOReplanFSM::checkCollisionCallback, this));
 
-    odom_sub_ = nh.subscribe("/odom_map", 1, &EGOReplanFSM::odometryCallback, this);
+    odom_sub_ = nh->create_subscription<nav_msgs::msg::Odometry>("/odom_map", rclcpp::SensorDataQoS(), std::bind(&EGOReplanFSM::odometryCallback, this, std::placeholders::_1));
 
-    bspline_pub_ = nh.advertise<ego_planner::Bspline>("/planning/bspline", 10);
-    data_disp_pub_ = nh.advertise<ego_planner::DataDisp>("/planning/data_display", 100);
-    // cmd_pub_ = nh.advertise<geometry_msgs::Twist>("/twd_velocity_controller/cmd_vel",100);
-    cmd_pub_ = nh.advertise<geometry_msgs::Twist>("/cmd_vel",100);
-    adjust_cmd_pub_ = nh.advertise<std_msgs::UInt8>("/is_adjust_yaw",100);
-    odom_adjust_pub_ = nh.advertise<nav_msgs::Odometry>("/odom_adjust",100);
-    dir_pub = nh.advertise<std_msgs::UInt8>("/direction",100);
-    stop_pub = nh.advertise<std_msgs::UInt8>("/emergency_stop",100);
+    bspline_pub_ = nh->create_publisher<ego_planner::msg::Bspline>("/planning/bspline", 10);
+    data_disp_pub_ = nh->create_publisher<ego_planner::msg::DataDisp>("/planning/data_display", 100);
+    // cmd_pub_ = nh->create_publisher<geometry_msgs::msg::Twist>("/twd_velocity_controller/cmd_vel",100);
+    cmd_pub_ = nh->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel",100);
+    adjust_cmd_pub_ = nh->create_publisher<std_msgs::msg::UInt8>("/is_adjust_yaw",100);
+    odom_adjust_pub_ = nh->create_publisher<nav_msgs::msg::Odometry>("/odom_adjust",100);
+    dir_pub = nh->create_publisher<std_msgs::msg::UInt8>("/direction",100);
+    stop_pub = nh->create_publisher<std_msgs::msg::UInt8>("/emergency_stop",100);
 
     is_target_receive = false;
 
     if (target_type_ == TARGET_TYPE::MANUAL_TARGET)
-      waypoint_sub_ = nh.subscribe("/way_point", 1, &EGOReplanFSM::goal_callback, this);
+      waypoint_sub_ = nh->create_subscription<geometry_msgs::msg::PoseStamped>("/way_point", 10, std::bind(&EGOReplanFSM::goal_callback, this, std::placeholders::_1));
       //waypoint_sub_ = nh.subscribe("/waypoint_generator/waypoints", 1, &EGOReplanFSM::waypointCallback, this);
     else if (target_type_ == TARGET_TYPE::PRESET_TARGET)
     {
-      ros::Duration(1.0).sleep();
-      while (ros::ok() && !have_odom_)
-        ros::spinOnce();
+      rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(1.0)));
+      while (rclcpp::ok() && !have_odom_)
+        rclcpp::spin_some(nh);
       planGlobalTrajbyGivenWps();
     }
     else
@@ -85,7 +89,7 @@ namespace ego_planner
     for (size_t i = 0; i < (size_t)waypoint_num_; i++)
     {
       visualization_->displayGoalPoint(wps[i], Eigen::Vector4d(0, 0.5, 0.5, 1), 0.3, i);
-      ros::Duration(0.001).sleep();
+      rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(0.001)));
     }
 
     if (success)
@@ -111,17 +115,17 @@ namespace ego_planner
       //   changeFSMExecState(REPLAN_TRAJ, "TRIG");
 
       // visualization_->displayGoalPoint(end_pt_, Eigen::Vector4d(1, 0, 0, 1), 0.3, 0);
-      ros::Duration(0.001).sleep();
+      rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(0.001)));
       visualization_->displayGlobalPathList(gloabl_traj, 0.1, 0);
-      ros::Duration(0.001).sleep();
+      rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(0.001)));
     }
     else
     {
-      ROS_ERROR("Unable to generate global trajectory!");
+      RCLCPP_ERROR(rclcpp::get_logger("ego_planner"), "Unable to generate global trajectory!");
     }
   }
 
-  void EGOReplanFSM::waypointCallback(const nav_msgs::PathConstPtr &msg)
+  void EGOReplanFSM::waypointCallback(const nav_msgs::msg::Path::ConstSharedPtr &msg)
   {
     if (msg->poses[0].pose.position.z < -0.1)
       return;
@@ -164,11 +168,11 @@ namespace ego_planner
     }
     else
     {
-      ROS_ERROR("Unable to generate global trajectory!");
+      RCLCPP_ERROR(rclcpp::get_logger("ego_planner"), "Unable to generate global trajectory!");
     }
   }
 
-void EGOReplanFSM::goal_callback(const geometry_msgs::PoseStamped::ConstPtr &msg)
+void EGOReplanFSM::goal_callback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr &msg)
 {
     end_pt_ << msg->pose.position.x, msg->pose.position.y, odom_pos_(2);
 
@@ -258,12 +262,12 @@ void EGOReplanFSM::goal_callback(const geometry_msgs::PoseStamped::ConstPtr &msg
     }
     else
     {
-        ROS_ERROR("Unable to generate global trajectory!");
+        RCLCPP_ERROR(rclcpp::get_logger("ego_planner"), "Unable to generate global trajectory!");
     }
 }
 
 
-  void EGOReplanFSM::odometryCallback(const nav_msgs::OdometryConstPtr &msg)
+  void EGOReplanFSM::odometryCallback(const nav_msgs::msg::Odometry::ConstSharedPtr &msg)
   {
     odom_pos_(0) = msg->pose.pose.position.x;
     odom_pos_(1) = msg->pose.pose.position.y;
@@ -280,8 +284,8 @@ void EGOReplanFSM::goal_callback(const geometry_msgs::PoseStamped::ConstPtr &msg
     odom_orient_.y() = msg->pose.pose.orientation.y;
     odom_orient_.z() = msg->pose.pose.orientation.z;
 
-    tf::quaternionMsgToTF(msg->pose.pose.orientation,quat);
-    tf::Matrix3x3(quat).getRPY(roll, pitch, yaw);
+    tf2::fromMsg(msg->pose.pose.orientation,quat);
+    tf2::Matrix3x3(quat).getRPY(roll, pitch, yaw);
 
     if(dir==NEGATIVE)
     {
@@ -293,11 +297,13 @@ void EGOReplanFSM::goal_callback(const geometry_msgs::PoseStamped::ConstPtr &msg
             yaw += PI;
         }
     }
-      nav_msgs::Odometry odom_adjust;
-      geometry_msgs::Quaternion quat=tf::createQuaternionMsgFromRollPitchYaw(roll,pitch,yaw);
+      nav_msgs::msg::Odometry odom_adjust;
+      tf2::Quaternion adjusted_quat;
+      adjusted_quat.setRPY(roll, pitch, yaw);
+      geometry_msgs::msg::Quaternion quat = tf2::toMsg(adjusted_quat);
       odom_adjust = *msg;
       odom_adjust.pose.pose.orientation = quat;
-      odom_adjust_pub_.publish(odom_adjust);
+      odom_adjust_pub_->publish(odom_adjust);
 
     have_odom_ = true;
   }
@@ -363,9 +369,9 @@ void EGOReplanFSM::goal_callback(const geometry_msgs::PoseStamped::ConstPtr &msg
       {
           dir = POSITIVE;
       }
-      std_msgs::UInt8 dir_new;
+      std_msgs::msg::UInt8 dir_new;
       dir_new.data = dir;
-      dir_pub.publish(dir_new);
+      dir_pub->publish(dir_new);
   }
 
 
@@ -382,7 +388,7 @@ void EGOReplanFSM::goal_callback(const geometry_msgs::PoseStamped::ConstPtr &msg
     cout << "[FSM]: state: " + state_str[int(exec_state_)] << endl;
   }
 
-  void EGOReplanFSM::execFSMCallback(const ros::TimerEvent &e)
+  void EGOReplanFSM::execFSMCallback()
   {
 
     static int fsm_num = 0;
@@ -451,18 +457,18 @@ void EGOReplanFSM::goal_callback(const geometry_msgs::PoseStamped::ConstPtr &msg
             is_adjust_pose.data = 1;
             cmd_vel.linear.x = 0;
             cmd_vel.angular.z = yaw_error/abs(yaw_error)*w_adjust;
-            cmd_pub_.publish(cmd_vel);
-            adjust_cmd_pub_.publish(is_adjust_pose);
+            cmd_pub_->publish(cmd_vel);
+            adjust_cmd_pub_->publish(is_adjust_pose);
         }else
         {
             is_adjust_pose.data = 0;
             cmd_vel.linear.x = 0;
             cmd_vel.angular.z =0;
-            cmd_pub_.publish(cmd_vel);
+            cmd_pub_->publish(cmd_vel);
             changeFSMExecState(EXEC_TRAJ, "FSM");
-            adjust_cmd_pub_.publish(is_adjust_pose);
+            adjust_cmd_pub_->publish(is_adjust_pose);
             auto info = &planner_manager_->local_data_;
-            info->start_time_ = ros::Time::now();
+            info->start_time_ = ego_ros2::now();
             publishBspline();
         }
         break;
@@ -523,7 +529,7 @@ void EGOReplanFSM::goal_callback(const geometry_msgs::PoseStamped::ConstPtr &msg
           }
           cout<<"yaw error : "<<yaw_error<<endl;
         auto info = &planner_manager_->local_data_;
-        info->start_time_ = ros::Time::now();
+        info->start_time_ = ego_ros2::now();
         publishBspline();
         changeFSMExecState(EXEC_TRAJ, "FSM");
         flag_escape_emergency_ = true;
@@ -545,10 +551,10 @@ void EGOReplanFSM::goal_callback(const geometry_msgs::PoseStamped::ConstPtr &msg
           yaw_error = yaw_start-yaw;
 
           auto info = &planner_manager_->local_data_;
-          info->start_time_ = ros::Time::now();
-          std_msgs::UInt8 stop_cmd;
+          info->start_time_ = ego_ros2::now();
+          std_msgs::msg::UInt8 stop_cmd;
           stop_cmd.data = 0;
-          stop_pub.publish(stop_cmd);
+          stop_pub->publish(stop_cmd);
           publishBspline();
           changeFSMExecState(EXEC_TRAJ, "FSM");
       }
@@ -564,8 +570,8 @@ void EGOReplanFSM::goal_callback(const geometry_msgs::PoseStamped::ConstPtr &msg
     {
       /* determine if need to replan */
       LocalTrajData *info = &planner_manager_->local_data_;
-      ros::Time time_now = ros::Time::now();
-      double t_cur = (time_now - info->start_time_).toSec();
+      rclcpp::Time time_now = ego_ros2::now();
+      double t_cur = (time_now - info->start_time_).seconds();
       t_cur = min(info->duration_, t_cur);
 
       Eigen::Vector3d pos = info->position_traj_.evaluateDeBoorT(t_cur);
@@ -613,16 +619,16 @@ void EGOReplanFSM::goal_callback(const geometry_msgs::PoseStamped::ConstPtr &msg
     }
     }
 
-    data_disp_.header.stamp = ros::Time::now();
-    data_disp_pub_.publish(data_disp_);
+    data_disp_.header.stamp = ego_ros2::now();
+    data_disp_pub_->publish(data_disp_);
   }
 
   bool EGOReplanFSM::planFromCurrentTraj()
   {
 
     LocalTrajData *info = &planner_manager_->local_data_;
-    ros::Time time_now = ros::Time::now();
-    double t_cur = (time_now - info->start_time_).toSec();
+    rclcpp::Time time_now = ego_ros2::now();
+    double t_cur = (time_now - info->start_time_).seconds();
 
     //cout << "info->velocity_traj_=" << info->velocity_traj_.get_control_points() << endl;
 
@@ -654,9 +660,9 @@ void EGOReplanFSM::goal_callback(const geometry_msgs::PoseStamped::ConstPtr &msg
             start_vel_ <<-start_vel_(0),-start_vel_(1),0;
             start_acc_ <<-start_acc_(0),-start_acc_(1),0;
             //callEmergencyStop(odom_pos_);
-            std_msgs::UInt8 stop_cmd;
+            std_msgs::msg::UInt8 stop_cmd;
             stop_cmd.data = 1;
-            stop_pub.publish(stop_cmd);
+            stop_pub->publish(stop_cmd);
 
         }
         is_target_receive = false;
@@ -683,17 +689,17 @@ void EGOReplanFSM::goal_callback(const geometry_msgs::PoseStamped::ConstPtr &msg
     return true;
   }
 
-  void EGOReplanFSM::checkCollisionCallback(const ros::TimerEvent &e)
+  void EGOReplanFSM::checkCollisionCallback()
   {
     LocalTrajData *info = &planner_manager_->local_data_;
     auto map = planner_manager_->grid_map_;
 
-    if (exec_state_ == WAIT_TARGET || info->start_time_.toSec() < 1e-5)
+    if (exec_state_ == WAIT_TARGET || info->start_time_.seconds() < 1e-5)
       return;
 
     /* ---------- check trajectory ---------- */
     constexpr double time_step = 0.01;
-    double t_cur = (ros::Time::now() - info->start_time_).toSec();
+    double t_cur = (ego_ros2::now() - info->start_time_).seconds();
     double t_2_3 = info->duration_ * 2 / 3;
     for (double t = t_cur; t < info->duration_; t += time_step)
     {
@@ -714,12 +720,12 @@ void EGOReplanFSM::goal_callback(const geometry_msgs::PoseStamped::ConstPtr &msg
         {
           if (t - t_cur < emergency_time_) // 0.8s of emergency time
           {
-            ROS_WARN("Suddenly discovered obstacles. emergency stop! time=%f", t - t_cur);
+            RCLCPP_WARN(rclcpp::get_logger("ego_planner"), "Suddenly discovered obstacles. emergency stop! time=%f", t - t_cur);
             changeFSMExecState(EMERGENCY_STOP, "SAFETY");
           }
           else
           {
-            //ROS_WARN("current traj in collision, replan.");
+            //RCLCPP_WARN(rclcpp::get_logger("ego_planner"), "current traj in collision, replan.");
             changeFSMExecState(REPLAN_TRAJ, "SAFETY");
           }
           return;
@@ -765,7 +771,7 @@ void EGOReplanFSM::goal_callback(const geometry_msgs::PoseStamped::ConstPtr &msg
     auto info = &planner_manager_->local_data_;
 
     /* publish traj */
-    ego_planner::Bspline bspline;
+    ego_planner::msg::Bspline bspline;
     bspline.order = 3;
     bspline.start_time = info->start_time_;
     bspline.traj_id = info->traj_id_;
@@ -774,7 +780,7 @@ void EGOReplanFSM::goal_callback(const geometry_msgs::PoseStamped::ConstPtr &msg
     bspline.pos_pts.reserve(pos_pts.cols());
     for (int i = 0; i < pos_pts.cols(); ++i)
     {
-      geometry_msgs::Point pt;
+      geometry_msgs::msg::Point pt;
       pt.x = pos_pts(0, i);
       pt.y = pos_pts(1, i);
       pt.z = pos_pts(2, i);
@@ -788,7 +794,7 @@ void EGOReplanFSM::goal_callback(const geometry_msgs::PoseStamped::ConstPtr &msg
       bspline.knots.push_back(knots(i));
     }
 
-    bspline_pub_.publish(bspline);
+    bspline_pub_->publish(bspline);
 
     return true;
   }
@@ -807,11 +813,11 @@ void EGOReplanFSM::goal_callback(const geometry_msgs::PoseStamped::ConstPtr &msg
       if (t < planner_manager_->global_data_.last_progress_time_ + 1e-5 && dist > planning_horizen_)
       {
         // todo
-        ROS_ERROR("last_progress_time_ ERROR !!!!!!!!!");
-        ROS_ERROR("last_progress_time_ ERROR !!!!!!!!!");
-        ROS_ERROR("last_progress_time_ ERROR !!!!!!!!!");
-        ROS_ERROR("last_progress_time_ ERROR !!!!!!!!!");
-        ROS_ERROR("last_progress_time_ ERROR !!!!!!!!!");
+        RCLCPP_ERROR(rclcpp::get_logger("ego_planner"), "last_progress_time_ ERROR !!!!!!!!!");
+        RCLCPP_ERROR(rclcpp::get_logger("ego_planner"), "last_progress_time_ ERROR !!!!!!!!!");
+        RCLCPP_ERROR(rclcpp::get_logger("ego_planner"), "last_progress_time_ ERROR !!!!!!!!!");
+        RCLCPP_ERROR(rclcpp::get_logger("ego_planner"), "last_progress_time_ ERROR !!!!!!!!!");
+        RCLCPP_ERROR(rclcpp::get_logger("ego_planner"), "last_progress_time_ ERROR !!!!!!!!!");
         return;
       }
       if (dist < dist_min)
@@ -847,9 +853,9 @@ void EGOReplanFSM::goal_callback(const geometry_msgs::PoseStamped::ConstPtr &msg
   void EGOReplanFSM::publishBspline() {
 
       auto info = &planner_manager_->local_data_;
-      info->start_time_ = ros::Time::now();
+      info->start_time_ = ego_ros2::now();
       /* publish traj */
-      ego_planner::Bspline bspline;
+      ego_planner::msg::Bspline bspline;
       bspline.order = 3;
       bspline.start_time = info->start_time_;
       bspline.traj_id = info->traj_id_;
@@ -860,7 +866,7 @@ void EGOReplanFSM::goal_callback(const geometry_msgs::PoseStamped::ConstPtr &msg
       Eigen::Vector3d point_temp;
       for (int i = 0; i < pos_pts.cols(); ++i)
       {
-          geometry_msgs::Point pt;
+          geometry_msgs::msg::Point pt;
           pt.x = pos_pts(0, i);
           pt.y = pos_pts(1, i);
           pt.z = odom_pos_(2);
@@ -876,7 +882,7 @@ void EGOReplanFSM::goal_callback(const geometry_msgs::PoseStamped::ConstPtr &msg
           bspline.knots.push_back(knots(i));
       }
 
-      bspline_pub_.publish(bspline);
+      bspline_pub_->publish(bspline);
   }
 
 } // namespace ego_planner

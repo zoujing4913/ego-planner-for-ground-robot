@@ -121,16 +121,16 @@ MatrixXd MPC_controller::MPC_Solve_qp(Eigen::Vector3d X_k,std::vector<Eigen::Vec
     return U_result;
 }
 
-void MPC_controller::MPC_init(ros::NodeHandle &nh)
+void MPC_controller::MPC_init(const rclcpp::Node::SharedPtr &nh)
 {
-    nh.getParam("/ego_planner_node/MPC/v_max", v_max);
-    nh.getParam("/ego_planner_node/MPC/w_max", w_max);
-    nh.getParam("/ego_planner_node/MPC/omega0", omega0);
-    nh.getParam("/ego_planner_node/MPC/omega1", omega1);
+    ego_ros2::parameter(nh, "MPC.v_max", v_max, 1.0);
+    ego_ros2::parameter(nh, "MPC.w_max", w_max, 1.0);
+    ego_ros2::parameter(nh, "MPC.omega0", omega0, 1.0);
+    ego_ros2::parameter(nh, "MPC.omega1", omega1, 0.5);
 
     // nh.param("/ego_planner_node/MPC/v_max",v_max,0.7);
     // nh.param("/ego_planner_node/MPC/w_max",w_max,0.3);
-    ROS_INFO("v_max : %f , w_max : %f",v_max,w_max);
+    RCLCPP_INFO(rclcpp::get_logger("mpc_controller"), "v_max : %f , w_max : %f",v_max,w_max);
     w_min = -w_max;
     v_min=0;
 

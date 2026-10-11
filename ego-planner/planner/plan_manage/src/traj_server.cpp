@@ -1,28 +1,28 @@
 #include "bspline_opt/uniform_bspline.h"
 #include "MPC.hpp"
-#include "nav_msgs/Odometry.h"
-#include "geometry_msgs/Twist.h"
-#include "ego_planner/Bspline.h"
-#include "std_msgs/UInt8.h"
-#include "std_msgs/UInt8MultiArray.h"
-#include "geometry_msgs/PoseStamped.h"
-#include "tf/transform_listener.h"
-#include "tf/transform_datatypes.h"
+#include <nav_msgs/msg/odometry.hpp>
+#include <geometry_msgs/msg/twist.hpp>
+#include "ego_planner/msg/bspline.hpp"
+#include <std_msgs/msg/u_int8.hpp>
+#include <std_msgs/msg/u_int8_multi_array.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 //#include "quadrotor_msgs/PositionCommand.h"
-#include "std_msgs/Empty.h"
-#include "std_msgs/UInt8.h"
-#include "visualization_msgs/Marker.h"
-#include <ros/ros.h>
+#include <std_msgs/msg/empty.hpp>
+#include <std_msgs/msg/u_int8.hpp>
+#include <visualization_msgs/msg/marker.hpp>
+#include <ego_ros2/node_utils.hpp>
 #include "time.h"
 
 #define PI 3.1415926
 #define yaw_error_max 90.0/180*PI
 #define N 15
 
-ros::Publisher vel_cmd_pub;
+rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr vel_cmd_pub;
 
 //quadrotor_msgs::PositionCommand cmd;
-geometry_msgs::Twist cmd;
+geometry_msgs::msg::Twist cmd;
 double pos_gain[3] = {0, 0, 0};
 double vel_gain[3] = {0, 0, 0};
 
@@ -32,7 +32,7 @@ bool receive_traj_ = false;
 bool is_orientation_init = false;
 vector<UniformBspline> traj_;
 double traj_duration_;
-ros::Time start_time_,time_s,time_e;
+rclcpp::Time start_time_,time_s,time_e;
 int traj_id_;
 
 Eigen::Vector3d odom_pos_,odom_vel_;
@@ -40,23 +40,23 @@ Eigen::Quaterniond odom_orient_;
 
 MPC_controller mpc_controller;
 double roll,pitch,yaw;
-geometry_msgs::PoseStamped pose_cur;
-tf::Quaternion quat;
-std_msgs::UInt8 is_adjust_pose;
-std_msgs::UInt8 dir;
+geometry_msgs::msg::PoseStamped pose_cur;
+tf2::Quaternion quat;
+std_msgs::msg::UInt8 is_adjust_pose;
+std_msgs::msg::UInt8 dir;
 
 enum DIRECTION {POSITIVE=0,NEGATIVE=1};
 
 // yaw control
 double t_step;
 
-std_msgs::UInt8 stop_command;
+std_msgs::msg::UInt8 stop_command;
 
 ////time record
 clock_t start_clock,end_clock;
 double duration;
 
-void bsplineCallback(ego_planner::BsplineConstPtr msg)
+void bsplineCallback(ego_planner::msg::Bspline::ConstSharedPtr msg)
 {
   // parse pos traj
 
@@ -89,25 +89,25 @@ void bsplineCallback(ego_planner::BsplineConstPtr msg)
 
   traj_duration_ = traj_[0].getTimeSum();
 
-  //ROS_INFO("Receive b-spline trajectory!");
+  //RCLCPP_INFO(rclcpp::get_logger("ego_planner"), "Receive b-spline trajectory!");
 
   receive_traj_ = true;
 
 }
 
-void poseCallback(geometry_msgs::PoseStampedConstPtr msg)
+void poseCallback(geometry_msgs::msg::PoseStamped::ConstSharedPtr msg)
 {
     pose_cur = *msg;
-    tf::quaternionMsgToTF(msg->pose.orientation, quat);
-    tf::Matrix3x3(quat).getRPY(roll, pitch, yaw);//进行转换
+    tf2::fromMsg(msg->pose.orientation, quat);
+    tf2::Matrix3x3(quat).getRPY(roll, pitch, yaw);//进行转换
 }
 
-void adjust_yaw_Callback(std_msgs::UInt8ConstPtr msg)
+void adjust_yaw_Callback(std_msgs::msg::UInt8::ConstSharedPtr msg)
 {
     is_adjust_pose = *msg;
 }
 
-void dirCallback(const std_msgs::UInt8ConstPtr& msg)
+void dirCallback(const std_msgs::msg::UInt8::ConstSharedPtr& msg)
 {
     dir = *msg;
 }
@@ -123,7 +123,7 @@ void MPC_calculate(double &t_cur)
     double v_linear_1,w;
     double t_k,t_k_1;
 
-    //ROS_INFO("Run to here!");
+    //RCLCPP_INFO(rclcpp::get_logger("ego_planner"), "Run to here!");
 
     //Eigen::Vector3d pos_first = traj_[0].evaluateDeBoor(t_cur);
     //Eigen::Vector3d pos_second = traj_[0].evaluateDeBoor(t_cur+t_step);
@@ -135,7 +135,7 @@ void MPC_calculate(double &t_cur)
 
 //    if(abs(yaw-yaw_start)>yaw_error_max&&is_orientation_init==false)
 //    {
-//        ROS_INFO("current yaw : %5.3f , start yaw : %5.3f",yaw,yaw_start);
+//        RCLCPP_INFO(rclcpp::get_logger("ego_planner"), "current yaw : %5.3f , start yaw : %5.3f",yaw,yaw_start);
 //        if(abs(yaw-yaw_start)>PI)
 //        {
 //            cmd.twist.linear.x=0;
@@ -146,8 +146,8 @@ void MPC_calculate(double &t_cur)
 //            cmd.twist.linear.x=0;
 //            cmd.twist.angular.z = (yaw_start-yaw)/abs(yaw-yaw_start)*PI/10;
 //        }
-//        vel_cmd_pub.publish(cmd);
-//        start_time_ = ros::Time::now();
+//        vel_cmd_pub->publish(cmd);
+//        start_time_ = ego_ros2::now();
 //        //cout<<"current yaw : "<<yaw*180/PI<<endl;
 //        //cout<<"target yaw : "<<yaw_start*180/PI<<endl;
 //        //cout<<"current w : "<<web_cmd_vel.angular.z<<endl;
@@ -189,7 +189,7 @@ void MPC_calculate(double &t_cur)
 
             if(abs(yaw2-yaw1)>PI)
             {
-                //ROS_WARN("orientation suddenly change !");
+                //RCLCPP_WARN(rclcpp::get_logger("ego_planner"), "orientation suddenly change !");
                 //cout<<"current index : "<<i+1<<endl;
                 //cout<<"yaw 1 : "<<yaw1<<endl;
                 //cout<<"yaw 2 : "<<yaw2<<endl;
@@ -250,7 +250,7 @@ void MPC_calculate(double &t_cur)
         // cout<<"xr  : "<<X_r[0]<<endl;
         // cout<<"xk  : "<<X_k<<endl;
 
-        //ROS_INFO("Run to here!");
+        //RCLCPP_INFO(rclcpp::get_logger("ego_planner"), "Run to here!");
         u_k = mpc_controller.MPC_Solve_qp(X_k,X_r,U_r,N);
 
 
@@ -269,14 +269,14 @@ void MPC_calculate(double &t_cur)
        conut1+=1;
        if(conut1%20==0)
        {
-           ROS_WARN("U r :");
+           RCLCPP_WARN(rclcpp::get_logger("ego_planner"), "U r :");
            for(int i=0;i<U_r.size();i++)
            {
                cout<<"vel ref :"<<U_r[i](0)<<","<<"w ref : "<<U_r[i](1);
                cout<<endl;
            }
            cout<<endl;
-           ROS_WARN("U k :");
+           RCLCPP_WARN(rclcpp::get_logger("ego_planner"), "U k :");
            for(int i=0;i<u_k.cols();i++)
            {
                cout<<"vel optimal :"<<u_k.col(i)(0)<<","<<"w optimal : "<<u_k.col(i)(1);
@@ -289,7 +289,7 @@ void MPC_calculate(double &t_cur)
        }
 
 
-        vel_cmd_pub.publish(cmd);
+        vel_cmd_pub->publish(cmd);
 //        control_times+=1;
 //        //cout<<"control_times : "<<control_times<<endl;
 //        //cout<<"current t : "<<t_c<<endl;
@@ -299,21 +299,21 @@ void MPC_calculate(double &t_cur)
 //            is_orientation_init=false;
 //            web_cmd_vel.angular.z = 0;
 //            web_cmd_vel.linear.x = 0;
-//            web_cmd_pub.publish(web_cmd_vel);
+//            web_cmd_pub->publish(web_cmd_vel);
 //            control_times=0;
 //        }
-        //ros::Time t_end = ros::Time::now();
-        //ROS_INFO("control total time : %5.3f ms",(t_end-t_start).toSec()*1000);
+        //rclcpp::Time t_end = ego_ros2::now();
+        //RCLCPP_INFO(rclcpp::get_logger("ego_planner"), "control total time : %5.3f ms",(t_end-t_start).seconds()*1000);
    // }
 
 }
 
-void stopCallback(std_msgs::UInt8ConstPtr msg)
+void stopCallback(std_msgs::msg::UInt8::ConstSharedPtr msg)
 {
     stop_command = *msg;
 }
 
-void odometryCallback(const nav_msgs::OdometryConstPtr &msg)
+void odometryCallback(const nav_msgs::msg::Odometry::ConstSharedPtr &msg)
 {
     odom_pos_(0) = msg->pose.pose.position.x;
     odom_pos_(1) = msg->pose.pose.position.y;
@@ -330,8 +330,8 @@ void odometryCallback(const nav_msgs::OdometryConstPtr &msg)
     odom_orient_.y() = msg->pose.pose.orientation.y;
     odom_orient_.z() = msg->pose.pose.orientation.z;
 
-    tf::quaternionMsgToTF(msg->pose.pose.orientation,quat);
-    tf::Matrix3x3(quat).getRPY(roll, pitch, yaw);
+    tf2::fromMsg(msg->pose.pose.orientation,quat);
+    tf2::Matrix3x3(quat).getRPY(roll, pitch, yaw);
 
     if(dir.data==NEGATIVE)
     {
@@ -346,43 +346,43 @@ void odometryCallback(const nav_msgs::OdometryConstPtr &msg)
 
 }
 
-void cmdCallback(const ros::TimerEvent &e)
+void cmdCallback()
 {
     /* no publishing before receive traj_ */
     if (stop_command.data==1)
     {
         cmd.angular.z = 0;
         cmd.linear.x = 0;
-        vel_cmd_pub.publish(cmd);
+        vel_cmd_pub->publish(cmd);
         return;
     }
 
     if (!receive_traj_)
         return;
-    //ROS_WARN("Run here !");
-    ros::Time time_s = ros::Time::now();
-    double t_cur = (time_s - start_time_).toSec();
+    //RCLCPP_WARN(rclcpp::get_logger("ego_planner"), "Run here !");
+    rclcpp::Time time_s = ego_ros2::now();
+    double t_cur = (time_s - start_time_).seconds();
 
 //    Eigen::Vector3d pos_first = traj_[0].evaluateDeBoor(t_cur);
 //    Eigen::Vector3d pos_second = traj_[0].evaluateDeBoor(t_cur+t_step);
 //    double yaw_start = atan2((pos_second-pos_first)(1),(pos_second-pos_first)(0));
 
-    static ros::Time time_last = ros::Time::now();
+    static rclcpp::Time time_last = ego_ros2::now();
 
     if (t_cur < traj_duration_ && t_cur >= 0.0)
     {
-        //ROS_INFO("MPC_Calculate!");
+        //RCLCPP_INFO(rclcpp::get_logger("ego_planner"), "MPC_Calculate!");
         start_clock = clock();
         MPC_calculate(t_cur);
         end_clock = clock();
         duration = (double)(end_clock - start_clock) / CLOCKS_PER_SEC *1000;
-        //ROS_INFO("Control times : %f ms",duration);
+        //RCLCPP_INFO(rclcpp::get_logger("ego_planner"), "Control times : %f ms",duration);
     }
     else if (t_cur >= traj_duration_)
     {
         cmd.angular.z = 0;
         cmd.linear.x = 0;
-        vel_cmd_pub.publish(cmd);
+        vel_cmd_pub->publish(cmd);
         is_orientation_init=false;
     }
     else
@@ -391,45 +391,47 @@ void cmdCallback(const ros::TimerEvent &e)
     }
     time_last = time_s;
 
-    vel_cmd_pub.publish(cmd);
+    vel_cmd_pub->publish(cmd);
 }
 
 
 int main(int argc, char **argv)
 {
-  ros::init(argc, argv, "traj_server");
-  ros::NodeHandle node("~");
+  rclcpp::init(argc, argv);
+  auto node = std::make_shared<rclcpp::Node>("traj_server");
+  ego_ros2::use_clock(node);
 
   std::string cmd_topic,pose_topic;
-  node.getParam("/ego_planner_node/fsm/pose_topic",pose_topic);
-  node.getParam("/ego_planner_node/fsm/vel_topic",cmd_topic);
+  ego_ros2::parameter(node, "pose_topic", pose_topic, std::string("pose"));
+  ego_ros2::parameter(node, "cmd_topic", cmd_topic, std::string("cmd_vel"));
 
 
-  ros::Subscriber bspline_sub = node.subscribe("/planning/bspline", 10, bsplineCallback);
-  ros::Subscriber pose_sub = node.subscribe(pose_topic, 10, poseCallback);
-  ros::Subscriber odom_sub = node.subscribe("/state_estimation", 10, odometryCallback);
-  ros::Subscriber stop_sub = node.subscribe("/emergency_stop",10,stopCallback);
-  ros::Subscriber adjust_yaw_sub = node.subscribe("/is_adjust_yaw",10,adjust_yaw_Callback);
-  ros::Subscriber command_sub = node.subscribe("/direction",10,dirCallback);
+  auto bspline_sub = node->create_subscription<ego_planner::msg::Bspline>("/planning/bspline", 10, bsplineCallback);
+  auto pose_sub = node->create_subscription<geometry_msgs::msg::PoseStamped>(pose_topic, rclcpp::SensorDataQoS(), poseCallback);
+  auto odom_sub = node->create_subscription<nav_msgs::msg::Odometry>("/state_estimation", rclcpp::SensorDataQoS(), odometryCallback);
+  auto stop_sub = node->create_subscription<std_msgs::msg::UInt8>("/emergency_stop", 10, stopCallback);
+  auto adjust_yaw_sub = node->create_subscription<std_msgs::msg::UInt8>("/is_adjust_yaw", 10, adjust_yaw_Callback);
+  auto command_sub = node->create_subscription<std_msgs::msg::UInt8>("/direction", 10, dirCallback);
 
   mpc_controller.MPC_init(node);
-  vel_cmd_pub = node.advertise<geometry_msgs::Twist>("/cmd_vel", 50);
+  vel_cmd_pub = node->create_publisher<geometry_msgs::msg::Twist>(cmd_topic, 10);
   stop_command.data = 0;
   dir.data = POSITIVE;
   t_step = 0.03;
 
 
-  ros::Timer cmd_timer = node.createTimer(ros::Duration(0.03), cmdCallback);
+  auto cmd_timer = node->create_wall_timer(std::chrono::milliseconds(30), cmdCallback);
 
-//  nh.param("traj_server/time_forward", time_forward_, -1.0);
+//  ego_ros2::parameter(nh, "traj_server/time_forward", time_forward_, -1.0);
 //  last_yaw_ = 0.0;
 //  last_yaw_dot_ = 0.0;
 
-  ros::Duration(1.0).sleep();
+  rclcpp::sleep_for(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::duration<double>(1.0)));
 
-  ROS_WARN("[Traj server]: ready.");
+  RCLCPP_WARN(rclcpp::get_logger("ego_planner"), "[Traj server]: ready.");
 
-  ros::spin();
+  rclcpp::spin(node);
+  rclcpp::shutdown();
 
   return 0;
 }

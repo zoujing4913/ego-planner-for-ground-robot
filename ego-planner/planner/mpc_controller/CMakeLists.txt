@@ -1,50 +1,25 @@
-cmake_minimum_required(VERSION 3.0.2)
+cmake_minimum_required(VERSION 3.16)
 project(mpc_controller)
-
-message(status "IPOPT_CFLAGS: " ${IPOPT_CFLAGS})
-message(status "IPOPT_CFLAGS_OTHER: " ${IPOPT_CFLAGS_OTHER})
-set(CMAKE_CXX_FLAGS "-DHAVE_CSTDDEF -DHAVE_MPI_INITIALIZED")
-
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(ego_ros2 REQUIRED)
 find_package(Eigen3 REQUIRED)
-find_package(catkin REQUIRED COMPONENTS
-        roscpp
-
-        )
-
-
-catkin_package(
-        INCLUDE_DIRS include
-        LIBRARIES mpc_controller
-
-        #  CATKIN_DEPENDS roscpp std_msgs
-        #  DEPENDS system_lib
-)
-
-add_library(mpc_controller
-        src/MPC.cpp
-        include/MPC.hpp)
-target_link_libraries(mpc_controller
-        ${catkin_LIBRARIES}
-        )
-
-include_directories(
-        include
-        /usr/local/include
-        ${EIGEN3_INCLUDE_DIR}
-        ${catkin_INCLUDE_DIRS}
-)
-link_directories(/usr/local/lib)
-
-add_definitions(${EIGEN3_DEFINITIONS})
-
-
+set(QPOASES_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../qpOASES)
+file(GLOB QPOASES_SOURCES CONFIGURE_DEPENDS ${QPOASES_ROOT}/src/*.cpp)
+add_library(qpoases SHARED ${QPOASES_SOURCES})
+target_compile_definitions(qpoases PRIVATE __NO_COPYRIGHT__ LINUX)
+target_include_directories(qpoases PUBLIC $<BUILD_INTERFACE:${QPOASES_ROOT}/include> $<INSTALL_INTERFACE:include>)
+add_library(mpc_controller SHARED src/MPC.cpp)
+target_include_directories(mpc_controller PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+ament_target_dependencies(mpc_controller rclcpp ego_ros2)
+target_link_libraries(mpc_controller Eigen3::Eigen qpoases)
 add_executable(qp_test app/qp_test.cpp)
-target_link_libraries(qp_test libqpOASES.so)
-
-add_executable(mpc_test app/mpc_control_test.cpp
-                        src/uniform_bspline.cpp
-                        src/MPC.cpp)
-target_link_libraries(mpc_test
-        libqpOASES.so
-        ${catkin_LIBRARIES}
-        )
+target_link_libraries(qp_test qpoases Eigen3::Eigen)
+install(TARGETS mpc_controller qpoases EXPORT export_mpc_controller ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
+install(TARGETS qp_test DESTINATION lib/${PROJECT_NAME})
+install(DIRECTORY include/ ${QPOASES_ROOT}/include/ DESTINATION include)
+ament_export_targets(export_mpc_controller HAS_LIBRARY_TARGET)
+ament_export_dependencies(rclcpp ego_ros2 Eigen3)
+ament_package()

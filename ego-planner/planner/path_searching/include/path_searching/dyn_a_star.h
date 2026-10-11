@@ -2,8 +2,8 @@
 #define _DYN_A_STAR_H_
 
 #include <iostream>
-#include <ros/ros.h>
-#include <ros/console.h>
+#include <ego_ros2/node_utils.hpp>
+#include <ego_ros2/node_utils.hpp>
 #include <Eigen/Eigen>
 #include <plan_env/grid_map.h>
 #include <queue>
@@ -107,7 +107,7 @@ inline Eigen::Vector2d AStar::Index2Coord(const Eigen::Vector2i &index) const
 //
 //	if (idx(0) < 0 || idx(0) >= POOL_SIZE_(0) || idx(1) < 0 || idx(1) >= POOL_SIZE_(1) || idx(2) < 0 || idx(2) >= POOL_SIZE_(2))
 //	{
-//		ROS_ERROR("Ran out of pool, index=%d %d %d", idx(0), idx(1), idx(2));
+//		RCLCPP_ERROR(rclcpp::get_logger("ego_planner"), "Ran out of pool, index=%d %d %d", idx(0), idx(1), idx(2));
 //		return false;
 //	}
 //
@@ -119,7 +119,7 @@ inline bool AStar::Coord2Index(const Eigen::Vector2d &pt, Eigen::Vector2i &idx) 
 
     if (idx(0) < 0 || idx(0) >= POOL_SIZE_(0) || idx(1) < 0 || idx(1) >= POOL_SIZE_(1) )
     {
-        ROS_ERROR("Ran out of pool, index=%d %d", idx(0), idx(1));
+        RCLCPP_ERROR(rclcpp::get_logger("ego_planner"), "Ran out of pool, index=%d %d", idx(0), idx(1));
         return false;
     }
 

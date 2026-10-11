@@ -11,16 +11,16 @@ namespace ego_planner
 
     EGOPlannerManager::~EGOPlannerManager() { std::cout << "des manager" << std::endl; }
 
-    void EGOPlannerManager::initPlanModules(ros::NodeHandle &nh, PlanningVisualization::Ptr vis)
+    void EGOPlannerManager::initPlanModules(const rclcpp::Node::SharedPtr &nh, PlanningVisualization::Ptr vis)
     {
         /* read algorithm parameters */
 
-        nh.param("manager/max_vel", pp_.max_vel_, -1.0);
-        nh.param("manager/max_acc", pp_.max_acc_, -1.0);
-        nh.param("manager/max_jerk", pp_.max_jerk_, -1.0);
-        nh.param("manager/feasibility_tolerance", pp_.feasibility_tolerance_, 0.0);
-        nh.param("manager/control_points_distance", pp_.ctrl_pt_dist, -1.0);
-        nh.param("manager/planning_horizon", pp_.planning_horizen_, 5.0);
+        ego_ros2::parameter(nh, "manager/max_vel", pp_.max_vel_, -1.0);
+        ego_ros2::parameter(nh, "manager/max_acc", pp_.max_acc_, -1.0);
+        ego_ros2::parameter(nh, "manager/max_jerk", pp_.max_jerk_, -1.0);
+        ego_ros2::parameter(nh, "manager/feasibility_tolerance", pp_.feasibility_tolerance_, 0.0);
+        ego_ros2::parameter(nh, "manager/control_points_distance", pp_.ctrl_pt_dist, -1.0);
+        ego_ros2::parameter(nh, "manager/planning_horizon", pp_.planning_horizen_, 5.0);
 
         local_data_.traj_id_ = 0;
         grid_map_.reset(new GridMap);
@@ -58,8 +58,8 @@ namespace ego_planner
             return false;
         }
 
-        ros::Time t_start = ros::Time::now();
-        ros::Duration t_init, t_opt, t_refine;
+        rclcpp::Time t_start = ego_ros2::now();
+        rclcpp::Duration t_init(0, 0), t_opt(0, 0), t_refine(0, 0);
 
         /*** STEP 1: INIT ***/
         double ts = (start_pt - local_target_pt).norm() > 0.1 ? pp_.ctrl_pt_dist / pp_.max_vel_ * 1.2 : pp_.ctrl_pt_dist / pp_.max_vel_ * 5; // pp_.ctrl_pt_dist / pp_.max_vel_ is too tense, and will surely exceed the acc/vel limits
@@ -133,7 +133,7 @@ namespace ego_planner
             {
 
                 double t;
-                double t_cur = (ros::Time::now() - local_data_.start_time_).toSec();
+                double t_cur = (ego_ros2::now() - local_data_.start_time_).seconds();
 
                 vector<double> pseudo_arc_length;
                 vector<Eigen::Vector3d> segment_point;
@@ -165,7 +165,7 @@ namespace ego_planner
                         }
                         else
                         {
-                            ROS_ERROR("pseudo_arc_length is empty, return!");
+                            RCLCPP_ERROR(rclcpp::get_logger("ego_planner"), "pseudo_arc_length is empty, return!");
                             continous_failures_count_++;
                             return false;
                         }
@@ -214,13 +214,13 @@ namespace ego_planner
         vector<vector<Eigen::Vector3d>> a_star_pathes;
         a_star_pathes = bspline_optimizer_rebound_->initControlPoints(ctrl_pts, true);
 
-        t_init = ros::Time::now() - t_start;
+        t_init = ego_ros2::now() - t_start;
 
         static int vis_id = 0;
         visualization_->displayInitPathList(point_set, 0.2, 0);
         visualization_->displayAStarList(a_star_pathes, vis_id);
 
-        t_start = ros::Time::now();
+        t_start = ego_ros2::now();
 
         /*** STEP 2: OPTIMIZE ***/
         bool flag_step_1_success = bspline_optimizer_rebound_->BsplineOptimizeTrajRebound(ctrl_pts, ts);
@@ -233,8 +233,8 @@ namespace ego_planner
         }
         //visualization_->displayOptimalList( ctrl_pts, vis_id );
 
-        t_opt = ros::Time::now() - t_start;
-        t_start = ros::Time::now();
+        t_opt = ego_ros2::now() - t_start;
+        t_start = ego_ros2::now();
 
         /*** STEP 3: REFINE(RE-ALLOCATE TIME) IF NECESSARY ***/
         UniformBspline pos = UniformBspline(ctrl_pts, 3, ts);
@@ -259,12 +259,12 @@ namespace ego_planner
           return false;
           }
 
-        t_refine = ros::Time::now() - t_start;
+        t_refine = ego_ros2::now() - t_start;
 
         // save planned results
-        updateTrajInfo(pos, ros::Time::now());
+        updateTrajInfo(pos, ego_ros2::now());
 
-        cout << "total time:\033[42m" << (t_init + t_opt + t_refine).toSec() << "\033[0m,optimize:" << (t_init + t_opt).toSec() << ",refine:" << t_refine.toSec() << endl;
+        cout << "total time:\033[42m" << (t_init + t_opt + t_refine).seconds() << "\033[0m,optimize:" << (t_init + t_opt).seconds() << ",refine:" << t_refine.seconds() << endl;
 
         // success. YoY
         continous_failures_count_ = 0;
@@ -279,7 +279,7 @@ namespace ego_planner
             control_points.col(i) = stop_pos;
         }
 
-        updateTrajInfo(UniformBspline(control_points, 3, 1.0), ros::Time::now());
+        updateTrajInfo(UniformBspline(control_points, 3, 1.0), ego_ros2::now());
 
         return true;
     }
@@ -358,7 +358,7 @@ namespace ego_planner
         else
             return false;
 
-        auto time_now = ros::Time::now();
+        auto time_now = ego_ros2::now();
         global_data_.setGlobalTraj(gl_traj, time_now);
 
         return true;
@@ -400,7 +400,7 @@ namespace ego_planner
 
         // write position matrix
         int pt_num = inter_points.size();
-        //ROS_INFO("point num : %d",inter_points.size());
+        //RCLCPP_INFO(rclcpp::get_logger("ego_planner"), "point num : %d",inter_points.size());
         Eigen::MatrixXd pos(3, pt_num);
         for (int i = 0; i < pt_num; ++i)
             pos.col(i) = inter_points[i];
@@ -423,7 +423,7 @@ namespace ego_planner
         else
             return false;
 
-        auto time_now = ros::Time::now();
+        auto time_now = ego_ros2::now();
         global_data_.setGlobalTraj(gl_traj, time_now);
 
         return true;
@@ -450,7 +450,7 @@ namespace ego_planner
         return success;
     }
 
-    void EGOPlannerManager::updateTrajInfo(const UniformBspline &position_traj, const ros::Time time_now)
+    void EGOPlannerManager::updateTrajInfo(const UniformBspline &position_traj, const rclcpp::Time time_now)
     {
         local_data_.start_time_ = time_now;
         local_data_.position_traj_ = position_traj;

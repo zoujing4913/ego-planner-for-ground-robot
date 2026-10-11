@@ -4,27 +4,27 @@ using std::cout;
 using std::endl;
 namespace ego_planner
 {
-  PlanningVisualization::PlanningVisualization(ros::NodeHandle &nh)
+  PlanningVisualization::PlanningVisualization(const rclcpp::Node::SharedPtr &nh)
   {
     node = nh;
 
-    goal_point_pub = nh.advertise<visualization_msgs::Marker>("goal_point", 2);
-    global_list_pub = nh.advertise<visualization_msgs::Marker>("global_list", 2);
-    init_list_pub = nh.advertise<visualization_msgs::Marker>("init_list", 2);
-    optimal_list_pub = nh.advertise<visualization_msgs::Marker>("optimal_list", 2);
-    a_star_list_pub = nh.advertise<visualization_msgs::Marker>("a_star_list", 20);
+    goal_point_pub = nh->create_publisher<visualization_msgs::msg::Marker>("goal_point", 2);
+    global_list_pub = nh->create_publisher<visualization_msgs::msg::Marker>("global_list", 2);
+    init_list_pub = nh->create_publisher<visualization_msgs::msg::Marker>("init_list", 2);
+    optimal_list_pub = nh->create_publisher<visualization_msgs::msg::Marker>("optimal_list", 2);
+    a_star_list_pub = nh->create_publisher<visualization_msgs::msg::Marker>("a_star_list", 20);
   }
 
   // // real ids used: {id, id+1000}
-  void PlanningVisualization::displayMarkerList(ros::Publisher &pub, const vector<Eigen::Vector3d> &list, double scale,
+  void PlanningVisualization::displayMarkerList(rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr &pub, const vector<Eigen::Vector3d> &list, double scale,
                                                 Eigen::Vector4d color, int id)
   {
-    visualization_msgs::Marker sphere, line_strip;
+    visualization_msgs::msg::Marker sphere, line_strip;
     sphere.header.frame_id = line_strip.header.frame_id = "map";
-    sphere.header.stamp = line_strip.header.stamp = ros::Time::now();
-    sphere.type = visualization_msgs::Marker::SPHERE_LIST;
-    line_strip.type = visualization_msgs::Marker::LINE_STRIP;
-    sphere.action = line_strip.action = visualization_msgs::Marker::ADD;
+    sphere.header.stamp = line_strip.header.stamp = ego_ros2::now();
+    sphere.type = visualization_msgs::msg::Marker::SPHERE_LIST;
+    line_strip.type = visualization_msgs::msg::Marker::LINE_STRIP;
+    sphere.action = line_strip.action = visualization_msgs::msg::Marker::ADD;
     sphere.id = id;
     line_strip.id = id + 1000;
 
@@ -37,7 +37,7 @@ namespace ego_planner
     sphere.scale.y = scale;
     sphere.scale.z = scale;
     line_strip.scale.x = scale / 2;
-    geometry_msgs::Point pt;
+    geometry_msgs::msg::Point pt;
     for (int i = 0; i < int(list.size()); i++)
     {
       pt.x = list[i](0);
@@ -46,20 +46,20 @@ namespace ego_planner
       sphere.points.push_back(pt);
       line_strip.points.push_back(pt);
     }
-    pub.publish(sphere);
-    pub.publish(line_strip);
+    pub->publish(sphere);
+    pub->publish(line_strip);
   }
 
   // real ids used: {id, id+1}
-  void PlanningVisualization::generatePathDisplayArray(visualization_msgs::MarkerArray &array,
+  void PlanningVisualization::generatePathDisplayArray(visualization_msgs::msg::MarkerArray &array,
                                                        const vector<Eigen::Vector3d> &list, double scale, Eigen::Vector4d color, int id)
   {
-    visualization_msgs::Marker sphere, line_strip;
+    visualization_msgs::msg::Marker sphere, line_strip;
     sphere.header.frame_id = line_strip.header.frame_id = "map";
-    sphere.header.stamp = line_strip.header.stamp = ros::Time::now();
-    sphere.type = visualization_msgs::Marker::SPHERE_LIST;
-    line_strip.type = visualization_msgs::Marker::LINE_STRIP;
-    sphere.action = line_strip.action = visualization_msgs::Marker::ADD;
+    sphere.header.stamp = line_strip.header.stamp = ego_ros2::now();
+    sphere.type = visualization_msgs::msg::Marker::SPHERE_LIST;
+    line_strip.type = visualization_msgs::msg::Marker::LINE_STRIP;
+    sphere.action = line_strip.action = visualization_msgs::msg::Marker::ADD;
     sphere.id = id;
     line_strip.id = id + 1;
 
@@ -72,7 +72,7 @@ namespace ego_planner
     sphere.scale.y = scale;
     sphere.scale.z = scale;
     line_strip.scale.x = scale / 3;
-    geometry_msgs::Point pt;
+    geometry_msgs::msg::Point pt;
     for (int i = 0; i < int(list.size()); i++)
     {
       pt.x = list[i](0);
@@ -86,16 +86,16 @@ namespace ego_planner
   }
 
   // real ids used: {1000*id ~ (arrow nums)+1000*id}
-  void PlanningVisualization::generateArrowDisplayArray(visualization_msgs::MarkerArray &array,
+  void PlanningVisualization::generateArrowDisplayArray(visualization_msgs::msg::MarkerArray &array,
                                                         const vector<Eigen::Vector3d> &list, double scale, Eigen::Vector4d color, int id)
   {
-    visualization_msgs::Marker arrow;
+    visualization_msgs::msg::Marker arrow;
     arrow.header.frame_id = "map";
-    arrow.header.stamp = ros::Time::now();
-    arrow.type = visualization_msgs::Marker::ARROW;
-    arrow.action = visualization_msgs::Marker::ADD;
+    arrow.header.stamp = ego_ros2::now();
+    arrow.type = visualization_msgs::msg::Marker::ARROW;
+    arrow.action = visualization_msgs::msg::Marker::ADD;
 
-    // geometry_msgs::Point start, end;
+    // geometry_msgs::msg::Point start, end;
     // arrow.points
 
     arrow.color.r = color(0);
@@ -106,7 +106,7 @@ namespace ego_planner
     arrow.scale.y = 2 * scale;
     arrow.scale.z = 2 * scale;
 
-    geometry_msgs::Point start, end;
+    geometry_msgs::msg::Point start, end;
     for (int i = 0; i < int(list.size() / 2); i++)
     {
       // arrow.color.r = color(0) / (1+i);
@@ -130,11 +130,11 @@ namespace ego_planner
 
   void PlanningVisualization::displayGoalPoint(Eigen::Vector3d goal_point, Eigen::Vector4d color, const double scale, int id)
   {
-    visualization_msgs::Marker sphere;
+    visualization_msgs::msg::Marker sphere;
     sphere.header.frame_id = "world";
-    sphere.header.stamp = ros::Time::now();
-    sphere.type = visualization_msgs::Marker::SPHERE;
-    sphere.action = visualization_msgs::Marker::ADD;
+    sphere.header.stamp = ego_ros2::now();
+    sphere.type = visualization_msgs::msg::Marker::SPHERE;
+    sphere.action = visualization_msgs::msg::Marker::ADD;
     sphere.id = id;
 
     sphere.pose.orientation.w = 1.0;
@@ -149,13 +149,13 @@ namespace ego_planner
     sphere.pose.position.y = goal_point(1);
     sphere.pose.position.z = goal_point(2);
 
-    goal_point_pub.publish(sphere);
+    goal_point_pub->publish(sphere);
   }
 
   void PlanningVisualization::displayGlobalPathList(vector<Eigen::Vector3d> init_pts, const double scale, int id)
   {
 
-    if (global_list_pub.getNumSubscribers() == 0)
+    if (global_list_pub->get_subscription_count() == 0)
     {
       return;
     }
@@ -167,7 +167,7 @@ namespace ego_planner
   void PlanningVisualization::displayInitPathList(vector<Eigen::Vector3d> init_pts, const double scale, int id)
   {
 
-    if (init_list_pub.getNumSubscribers() == 0)
+    if (init_list_pub->get_subscription_count() == 0)
     {
       return;
     }
@@ -179,7 +179,7 @@ namespace ego_planner
   void PlanningVisualization::displayOptimalList(Eigen::MatrixXd optimal_pts, int id)
   {
 
-    if (optimal_list_pub.getNumSubscribers() == 0)
+    if (optimal_list_pub->get_subscription_count() == 0)
     {
       return;
     }
@@ -197,7 +197,7 @@ namespace ego_planner
   void PlanningVisualization::displayAStarList(std::vector<std::vector<Eigen::Vector3d>> a_star_paths, int id /* = Eigen::Vector4d(0.5,0.5,0,1)*/)
   {
 
-    if (a_star_list_pub.getNumSubscribers() == 0)
+    if (a_star_list_pub->get_subscription_count() == 0)
     {
       return;
     }
@@ -227,15 +227,15 @@ namespace ego_planner
     }
   }
 
-  void PlanningVisualization::displayArrowList(ros::Publisher &pub, const vector<Eigen::Vector3d> &list, double scale, Eigen::Vector4d color, int id)
+  void PlanningVisualization::displayArrowList(rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr &pub, const vector<Eigen::Vector3d> &list, double scale, Eigen::Vector4d color, int id)
   {
-    visualization_msgs::MarkerArray array;
+    visualization_msgs::msg::MarkerArray array;
     // clear
-    pub.publish(array);
+    pub->publish(array);
 
     generateArrowDisplayArray(array, list, scale, color, id);
 
-    pub.publish(array);
+    pub->publish(array);
   }
 
   // PlanningVisualization::

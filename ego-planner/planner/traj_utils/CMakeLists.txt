@@ -1,42 +1,20 @@
-cmake_minimum_required(VERSION 2.8.3)
+cmake_minimum_required(VERSION 3.16)
 project(traj_utils)
-
-set(CMAKE_BUILD_TYPE "Release")
-set(CMAKE_CXX_FLAGS "-std=c++11")
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall -g")
-
-find_package(catkin REQUIRED COMPONENTS
-  bspline_opt
-  path_searching
-  roscpp
-  std_msgs
-  cv_bridge
-)
-
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+find_package(ament_cmake REQUIRED)
 find_package(Eigen3 REQUIRED)
-find_package(PCL 1.7 REQUIRED)
-
-catkin_package(
- INCLUDE_DIRS include
- LIBRARIES traj_utils
- CATKIN_DEPENDS path_searching bspline_opt
-#  DEPENDS system_lib
-)
-
-include_directories( 
-    SYSTEM 
-    include 
-    ${catkin_INCLUDE_DIRS}
-    ${Eigen3_INCLUDE_DIRS} 
-    ${PCL_INCLUDE_DIRS}
-)
-
-link_directories(${PCL_LIBRARY_DIRS})
-
-add_library( traj_utils
-    src/planning_visualization.cpp 
-    src/polynomial_traj.cpp 
-    )
-target_link_libraries( traj_utils
-    ${catkin_LIBRARIES} 
-    )  
+find_package(rclcpp REQUIRED)
+find_package(ego_ros2 REQUIRED)
+find_package(bspline_opt REQUIRED)
+find_package(path_searching REQUIRED)
+find_package(visualization_msgs REQUIRED)
+add_library(traj_utils SHARED src/planning_visualization.cpp src/polynomial_traj.cpp)
+target_include_directories(traj_utils PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+ament_target_dependencies(traj_utils rclcpp ego_ros2 bspline_opt path_searching visualization_msgs)
+target_link_libraries(traj_utils Eigen3::Eigen bspline_opt::bspline_opt path_searching::path_searching)
+install(TARGETS traj_utils EXPORT export_traj_utils ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
+install(DIRECTORY include/ DESTINATION include)
+ament_export_targets(export_traj_utils HAS_LIBRARY_TARGET)
+ament_export_dependencies(Eigen3 rclcpp ego_ros2 bspline_opt path_searching visualization_msgs)
+ament_package()
