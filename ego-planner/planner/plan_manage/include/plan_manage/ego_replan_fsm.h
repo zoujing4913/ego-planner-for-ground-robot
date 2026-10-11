@@ -93,6 +93,9 @@ namespace ego_planner
 
     /* ROS utils */
     rclcpp::Node::SharedPtr node_;
+    std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+    std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+    std::string world_frame_;
     rclcpp::TimerBase::SharedPtr exec_timer_, safety_timer_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr waypoint_sub_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;

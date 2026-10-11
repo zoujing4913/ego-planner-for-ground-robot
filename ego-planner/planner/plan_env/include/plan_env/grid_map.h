@@ -9,6 +9,9 @@
 #include <iostream>
 #include <random>
 #include <nav_msgs/msg/odometry.hpp>
+#include <sensor_msgs/msg/laser_scan.hpp>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
 #include <queue>
 #include <ego_ros2/node_utils.hpp>
 #include <tuple>
@@ -215,6 +218,7 @@ private:
   void cloudSegmentationCallback_PLANNING(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& cloud_segmentation);
   void cloudSegmentationCallback_EXPLORATION(const sensor_msgs::msg::PointCloud2::ConstSharedPtr& cloud_segmentation);
   void odomCallback(const nav_msgs::msg::Odometry::ConstSharedPtr& odom);
+  void laserScanCallback(const sensor_msgs::msg::LaserScan::ConstSharedPtr& scan);
 
   // update occupancy by raycasting
   void fliterLocalMap();
@@ -255,6 +259,11 @@ private:
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr map_2d_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr unknown_pub_;
   rclcpp::TimerBase::SharedPtr occ_timer_, vis_timer_;
+  rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr laser_sub_;
+  std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+  std::vector<char> laser_occupancy_buffer_;
+  std::string input_type_;
 
   //
   uniform_real_distribution<double> rand_noise_;

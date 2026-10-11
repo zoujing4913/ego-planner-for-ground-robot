@@ -1,5 +1,6 @@
 
 #include <plan_manage/ego_replan_fsm.h>
+#include <ego_ros2/planar_odometry.hpp>
 
 #define PI 3.1415926
 #define yaw_error_max 25.0/180*PI
@@ -10,6 +11,9 @@ namespace ego_planner
   void EGOReplanFSM::init(const rclcpp::Node::SharedPtr &nh)
   {
     node_ = nh;
+    ego_ros2::parameter(nh, "grid_map.frame_id", world_frame_, std::string("odom"));
+    tf_buffer_ = std::make_shared<tf2_ros::Buffer>(nh->get_clock());
+    tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_, nh, true);
     trigger_ = false;
     have_new_target_ = false;
     flag_escape_emergency_ = false;
@@ -51,7 +55,7 @@ namespace ego_planner
     bspline_pub_ = nh->create_publisher<ego_planner::msg::Bspline>("/planning/bspline", 10);
     data_disp_pub_ = nh->create_publisher<ego_planner::msg::DataDisp>("/planning/data_display", 100);
     // cmd_pub_ = nh->create_publisher<geometry_msgs::msg::Twist>("/twd_velocity_controller/cmd_vel",100);
-    cmd_pub_ = nh->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel",100);
+    cmd_pub_ = nh->create_publisher<geometry_msgs::msg::Twist>("/planning/adjust_cmd_vel",10);
     adjust_cmd_pub_ = nh->create_publisher<std_msgs::msg::UInt8>("/is_adjust_yaw",100);
     odom_adjust_pub_ = nh->create_publisher<nav_msgs::msg::Odometry>("/odom_adjust",100);
     dir_pub = nh->create_publisher<std_msgs::msg::UInt8>("/direction",100);
@@ -172,8 +176,34 @@ namespace ego_planner
     }
   }
 
-void EGOReplanFSM::goal_callback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr &msg)
+void EGOReplanFSM::goal_callback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr &input)
 {
+    if (!have_odom_ || input->header.frame_id.empty() ||
+        !std::isfinite(input->pose.position.x) || !std::isfinite(input->pose.position.y)) {
+        RCLCPP_WARN(node_->get_logger(), "Goal rejected: valid odometry and a finite framed goal are required");
+        return;
+    }
+    auto msg = std::make_shared<geometry_msgs::msg::PoseStamped>(*input);
+    try {
+        if (input->header.frame_id != world_frame_) *msg = tf_buffer_->transform(*input, world_frame_);
+    } catch (const tf2::TransformException &error) {
+        RCLCPP_WARN(node_->get_logger(), "Goal transform unavailable: %s", error.what());
+        return;
+    }
+    if (!planner_manager_->grid_map_->isInMap2d(Eigen::Vector2d(msg->pose.position.x, msg->pose.position.y))) {
+        RCLCPP_WARN(node_->get_logger(), "Goal rejected: outside the configured planning map");
+        return;
+    }
+    std_msgs::msg::UInt8 stop;
+    if (std::hypot(msg->pose.position.x - odom_pos_(0), msg->pose.position.y - odom_pos_(1)) < 0.05) {
+        stop.data = 1;
+        stop_pub->publish(stop);
+        have_target_ = false;
+        changeFSMExecState(WAIT_TARGET, "GOAL_REACHED");
+        return;
+    }
+    stop.data = 0;
+    stop_pub->publish(stop);
     end_pt_ << msg->pose.position.x, msg->pose.position.y, odom_pos_(2);
 
     //cout << "Triggered!" << endl;
@@ -269,39 +299,34 @@ void EGOReplanFSM::goal_callback(const geometry_msgs::msg::PoseStamped::ConstSha
 
   void EGOReplanFSM::odometryCallback(const nav_msgs::msg::Odometry::ConstSharedPtr &msg)
   {
-    odom_pos_(0) = msg->pose.pose.position.x;
-    odom_pos_(1) = msg->pose.pose.position.y;
-    odom_pos_(2) = msg->pose.pose.position.z;
-
-    odom_vel_(0) = msg->twist.twist.linear.x;
-    odom_vel_(1) = msg->twist.twist.linear.y;
-    odom_vel_(2) = msg->twist.twist.linear.z;
+    ego_ros2::PlanarOdometry state;
+    try {
+        state = ego_ros2::planar_odometry(*msg, *tf_buffer_, world_frame_);
+    } catch (const std::exception &error) {
+        RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 2000, "Odometry rejected: %s", error.what());
+        return;
+    }
+    odom_pos_ << state.pose.pose.position.x, state.pose.pose.position.y, 0.0;
+    odom_vel_ = state.velocity;
 
     //odom_acc_ = estimateAcc( msg );
 
-    odom_orient_.w() = msg->pose.pose.orientation.w;
-    odom_orient_.x() = msg->pose.pose.orientation.x;
-    odom_orient_.y() = msg->pose.pose.orientation.y;
-    odom_orient_.z() = msg->pose.pose.orientation.z;
+    odom_orient_.w() = state.pose.pose.orientation.w;
+    odom_orient_.x() = state.pose.pose.orientation.x;
+    odom_orient_.y() = state.pose.pose.orientation.y;
+    odom_orient_.z() = state.pose.pose.orientation.z;
 
-    tf2::fromMsg(msg->pose.pose.orientation,quat);
+    tf2::fromMsg(state.pose.pose.orientation,quat);
     tf2::Matrix3x3(quat).getRPY(roll, pitch, yaw);
 
-    if(dir==NEGATIVE)
-    {
-        if(yaw>0)
-        {
-            yaw -= PI;
-        }else if(yaw<0)
-        {
-            yaw += PI;
-        }
-    }
+    if (dir == NEGATIVE) yaw = std::remainder(yaw + PI, 2.0 * PI);
       nav_msgs::msg::Odometry odom_adjust;
       tf2::Quaternion adjusted_quat;
       adjusted_quat.setRPY(roll, pitch, yaw);
       geometry_msgs::msg::Quaternion quat = tf2::toMsg(adjusted_quat);
       odom_adjust = *msg;
+      odom_adjust.header = state.pose.header;
+      odom_adjust.pose.pose = state.pose.pose;
       odom_adjust.pose.pose.orientation = quat;
       odom_adjust_pub_->publish(odom_adjust);
 
@@ -579,6 +604,15 @@ void EGOReplanFSM::goal_callback(const geometry_msgs::msg::PoseStamped::ConstSha
       /* && (end_pt_ - pos).norm() < 0.5 */
       if (t_cur > info->duration_ - 1e-2)
       {
+        // A sensor watchdog can pause a differential-drive base while trajectory
+        // time continues. Finish only when measured odometry reaches the goal.
+        if ((end_pt_ - odom_pos_).head<2>().norm() > 0.2) {
+          changeFSMExecState(REPLAN_TRAJ, "TRACKING");
+          return;
+        }
+        std_msgs::msg::UInt8 stop;
+        stop.data = 1;
+        stop_pub->publish(stop);
         have_target_ = false;
 
         changeFSMExecState(WAIT_TARGET, "FSM");

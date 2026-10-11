@@ -19,6 +19,7 @@ namespace ego_planner
   {
   private:
     rclcpp::Node::SharedPtr node;
+    std::string frame_id_;
 
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr goal_point_pub;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr global_list_pub;

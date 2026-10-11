@@ -1,4 +1,5 @@
 #include "plan_env/grid_map.h"
+#include <ego_ros2/planar_odometry.hpp>
 #include "time.h"
 
 // #define current_img_ md_.depth_image_[image_cnt_ & 1]
@@ -57,6 +58,14 @@ void GridMap::initMap(const rclcpp::Node::SharedPtr &nh)
   ego_ros2::parameter(node_, "grid_map/local_map_margin", mp_.local_map_margin_, 1);
   ego_ros2::parameter(node_, "grid_map/ground_height", mp_.ground_height_, 1.0);
 
+  if (!(mp_.resolution_ > 0.0 && x_size > 0.0 && y_size > 0.0 && z_size > 0.0) ||
+      mp_.skip_pixel_ <= 0 || mp_.obstacles_inflation_ < 0.0 || mp_.obstacles_inflation2d_ < 0.0) {
+    throw std::invalid_argument("Invalid grid dimensions, resolution, inflation, or skip_pixel");
+  }
+  ego_ros2::parameter(node_, "grid_map.input_type", input_type_, std::string("laser"));
+  tf_buffer_ = std::make_shared<tf2_ros::Buffer>(node_->get_clock());
+  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_, node_, true);
+
   mp_.resolution_inv_ = 1 / mp_.resolution_;
   mp_.map_origin_ = Eigen::Vector3d(-x_size / 2.0, -y_size / 2.0, mp_.ground_height_);
   mp_.map_size_ = Eigen::Vector3d(x_size, y_size, z_size);
@@ -83,6 +92,7 @@ void GridMap::initMap(const rclcpp::Node::SharedPtr &nh)
   // initialize data buffers
   int buffer_size = mp_.map_voxel_num_(0) * mp_.map_voxel_num_(1) * mp_.map_voxel_num_(2);
   int buffer_size_2d = mp_.map_voxel_num_(0) * mp_.map_voxel_num_(1);
+  laser_occupancy_buffer_.assign(buffer_size_2d, 0);
 
   md_.occupancy_buffer_ = vector<double>(buffer_size, mp_.clamp_min_log_ - mp_.unknown_flag_);
   md_.occupancy_buffer_inflate_ = vector<char>(buffer_size, 0);
@@ -119,6 +129,16 @@ void GridMap::initMap(const rclcpp::Node::SharedPtr &nh)
       0.0, 0.0, 0.0, 1.0;
 
   /* init callback */
+  if (input_type_ == "laser") {
+    if (mp_.map_type_ != PLANNING) throw std::invalid_argument("LaserScan input requires grid_map.map_type=1");
+    std::string scan_topic;
+    ego_ros2::parameter(node_, "grid_map.scan_topic", scan_topic, std::string("scan"));
+    laser_sub_ = node_->create_subscription<sensor_msgs::msg::LaserScan>(
+        scan_topic, rclcpp::SensorDataQoS(),
+        std::bind(&GridMap::laserScanCallback, this, std::placeholders::_1));
+  } else if (input_type_ != "pointcloud") {
+    throw std::invalid_argument("grid_map.input_type must be laser or pointcloud");
+  }
 
   depth_sub_.reset(new message_filters::Subscriber<sensor_msgs::msg::Image>(node_, "/grid_map/depth", rmw_qos_profile_sensor_data));
 
@@ -176,6 +196,9 @@ void GridMap::initMap(const rclcpp::Node::SharedPtr &nh)
   md_.has_first_depth_ = false;
   md_.has_odom_ = false;
   md_.has_cloud_ = false;
+  md_.is_pcl_update = false;
+  md_.local_bound_min_ = Eigen::Vector3i::Zero();
+  md_.local_bound_max_ = mp_.map_voxel_num_ - Eigen::Vector3i::Ones();
   md_.image_cnt_ = 0;
 
   md_.fuse_time_ = 0.0;
@@ -894,11 +917,14 @@ void GridMap::odomCallback(const nav_msgs::msg::Odometry::ConstSharedPtr &odom)
   if (md_.has_first_depth_)
     return;
 
-  md_.camera_pos_(0) = odom->pose.pose.position.x;
-  md_.camera_pos_(1) = odom->pose.pose.position.y;
-  md_.camera_pos_(2) = odom->pose.pose.position.z;
-
-  md_.has_odom_ = true;
+  try {
+    const auto state = ego_ros2::planar_odometry(*odom, *tf_buffer_, mp_.frame_id_);
+    md_.camera_pos_ << state.pose.pose.position.x, state.pose.pose.position.y, 0.0;
+    md_.has_odom_ = true;
+  } catch (const std::exception &error) {
+    RCLCPP_WARN_THROTTLE(node_->get_logger(), *node_->get_clock(), 2000,
+                         "Odometry rejected: %s", error.what());
+  }
 }
 
 void GridMap::cloudCallback(const sensor_msgs::msg::PointCloud2::ConstSharedPtr &img)
@@ -1402,18 +1428,20 @@ void GridMap::publTerrainHeight() {
 
 void GridMap::publishMap2D() {
     nav_msgs::msg::OccupancyGrid map_2d;
-    map_2d.header.frame_id = "map";
+    map_2d.header.frame_id = mp_.frame_id_;
+    map_2d.header.stamp = node_->now();
+    map_2d.info.origin.orientation.w = 1.0;
     map_2d.info.resolution = mp_.resolution_;
-    map_2d.info.width = md_.local_bound_max_(0)-md_.local_bound_min_(0);
-    map_2d.info.height = md_.local_bound_max_(1)-md_.local_bound_min_(1);
+    map_2d.info.width = md_.local_bound_max_(0)-md_.local_bound_min_(0)+1;
+    map_2d.info.height = md_.local_bound_max_(1)-md_.local_bound_min_(1)+1;
     map_2d.data = std::vector<int8_t>(map_2d.info.width*map_2d.info.height,0);
     Eigen::Vector3d origin;
     indexToPos(md_.local_bound_min_,origin);
-    map_2d.info.origin.position.x = origin(0);
-    map_2d.info.origin.position.y = origin(1);
-    for(int x = md_.local_bound_min_(0);x<md_.local_bound_max_(0);x++)
+    map_2d.info.origin.position.x = origin(0) - mp_.resolution_ / 2.0;
+    map_2d.info.origin.position.y = origin(1) - mp_.resolution_ / 2.0;
+    for(int x = md_.local_bound_min_(0);x<=md_.local_bound_max_(0);x++)
     {
-        for(int y = md_.local_bound_min_(1);y<md_.local_bound_max_(1);y++)
+        for(int y = md_.local_bound_min_(1);y<=md_.local_bound_max_(1);y++)
         {
             if(md_.occupancy_buffer_inflate_2d_[toAddress2d(x,y)]==1)
             {

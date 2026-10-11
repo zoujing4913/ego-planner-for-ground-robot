@@ -1,6 +1,7 @@
 #include "MPC.hpp"
 #include "math.h"
 #include "iostream"
+#include <stdexcept>
 
 #define PI 3.1415926
 #define T 0.03
@@ -102,10 +103,14 @@ MatrixXd MPC_controller::MPC_Solve_qp(Eigen::Vector3d X_k,std::vector<Eigen::Vec
     int_t nWSR = 800;
 
     QProblem mpc_qp_solver(2*N,1);
-    mpc_qp_solver.init(H,g,A,lb,ub,lbA,ubA,nWSR);
+    if (mpc_qp_solver.init(H,g,A,lb,ub,lbA,ubA,nWSR) != SUCCESSFUL_RETURN) {
+        throw std::runtime_error("qpOASES did not produce an optimal solution");
+    }
 
     real_t x_solution[2*N];
-    mpc_qp_solver.getPrimalSolution(x_solution);
+    if (mpc_qp_solver.getPrimalSolution(x_solution) != SUCCESSFUL_RETURN) {
+        throw std::runtime_error("qpOASES returned no primal solution");
+    }
 
 
     Vector2d u_k;
